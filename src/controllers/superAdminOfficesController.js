@@ -42,7 +42,7 @@ export async function listOffices(req, res) {
       const inherited = o.id === primary?.id ? snapshot.users.filter(u => !u.office_id) : [];
       return {
         ...o,
-        radius_m: 15,
+        radius_m: 50,
         max_accuracy_m: Math.min(Number(o.max_accuracy_m ?? 50), 50),
         timezone: o.timezone || 'Asia/Kolkata',
         office_ips: o.office_ips || [],
@@ -77,7 +77,7 @@ export async function saveOffice(req, res) {
   try {
     const id = req.params.id ? officeId(req.params.id) : null;
     const data = validateOffice(req.body);
-    data.radius_m = 15;
+    data.radius_m = 50;
     data.max_accuracy_m = Math.min(data.max_accuracy_m, 50);
     const now = new Date().toISOString();
     let saved;

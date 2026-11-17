@@ -395,7 +395,7 @@ const officeLocationData = [{
   name: 'KNOOVIQ HQ, Bengaluru',
   latitude: 12.971598,
   longitude: 77.594566,
-  radius_m: 15,
+  radius_m: 50,
   max_accuracy_m: 50,
   address: 'KNOOVIQ Tech Tower, Outer Ring Rd, Bengaluru, Karnataka 560103',
   is_active: true,

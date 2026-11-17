@@ -34,7 +34,7 @@ router.put('/', requireRoles('SUPER_ADMIN'), async (req, res, next) => {
     req.params.id = current?.id ? String(current.id) : undefined;
     req.body = {
       name: 'KNOOVIQ HQ',
-      radius_m: 15,
+      radius_m: 50,
       max_accuracy_m: 50,
       timezone: 'Asia/Kolkata',
       office_ips: [],
