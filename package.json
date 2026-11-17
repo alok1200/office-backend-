@@ -1,0 +1,22 @@
+{
+  "name": "knooviq-attendance-backend",
+  "version": "1.0.0",
+  "description": "KNOOVIQ Attendance and Time Management API",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "seed": "node src/db/seed.js",
+    "seed:calendar": "node scripts/seed-calendar-demo.mjs",
+    "db:setup": "node scripts/setup-local-postgres.mjs",
+    "db:migrate": "node src/db/seed.js",
+    "db:import-local": "node scripts/import-local-data.mjs"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  }
+}
