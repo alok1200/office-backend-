@@ -1,4 +1,5 @@
 import { calculateRequest, dateKey, getAllowanceBalances, requestCategories } from './superAdminRequestPolicy.js';
+import { CORRECTION_WORKFLOW, attendanceFingerprint } from './attendanceCorrections.js';
 import { indiaDate } from './superAdminAttendanceReport.js';
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
 export function planDecision(request, payload, context, now = new Date()) {
@@ -14,19 +15,21 @@ export function planDecision(request, payload, context, now = new Date()) {
   } else if (request.request_type === 'WFH') category = 'WFH';
   else if (request.request_type === 'REGULARIZATION') category = 'REGULARIZATION';
   else category = request.request_type === 'OTHER' && category === 'OFFICIAL' ? 'OFFICIAL' : null;
-  const calculation = calculateRequest({ category: category || 'OFFICIAL', start_date: dateKey(request.start_date), end_date: dateKey(request.end_date), half_day: request.metadata?.half_day === true }, context.holidays);
+  const hrTicket = request.metadata?.workflow === CORRECTION_WORKFLOW;
+  const calculation = hrTicket ? { days:1,year:Number(dateKey(request.start_date).slice(0,4)),category:'REGULARIZATION',label:'HR attendance correction' } : calculateRequest({ category: category || 'OFFICIAL', start_date: dateKey(request.start_date), end_date: dateKey(request.end_date), half_day: request.metadata?.half_day === true }, context.holidays);
   const balance = getAllowanceBalances(context.requests.filter(r => r.id !== request.id), calculation.year).find(b => b.category === category);
   if (balance && calculation.days > balance.remaining) fail(`Insufficient ${balance.label} balance: ${balance.remaining} day(s) available.`, 409);
   plan.metadata = { ...plan.metadata, ...calculation, category, label: category ? requestCategories[category].label : request.request_type };
   if (category !== 'REGULARIZATION') return plan;
   if (dateKey(request.start_date) !== dateKey(request.end_date)) fail('Regularization must cover one date. Reject this request and ask for separate daily requests.');
-  const correction = payload.correction;
+  const correction = payload.correction || (hrTicket ? request.metadata.proposed_correction : null);
   const validTime = value => typeof value === 'string' && /(?:Z|[+-]\d{2}:\d{2})$/.test(value) && Number.isFinite(Date.parse(value));
   if (!correction || !validTime(correction.check_in) || !validTime(correction.check_out)) fail('Provide reviewed check-in and check-out times with a timezone.');
   const start = new Date(correction.check_in), end = new Date(correction.check_out);
   if (end <= start || end > now || indiaDate(start) !== dateKey(request.start_date) || indiaDate(end) !== dateKey(request.start_date)) fail('Correction times must be on the request date in IST, in order, and not in the future.');
   const existing = context.attendance;
-  if (existing && ['CHECKED_IN', 'ON_BREAK'].includes(existing.current_state)) fail('An active workday cannot be regularized. Complete the workday first.', 409);
+  if (hrTicket && request.metadata.baseline !== attendanceFingerprint(existing || null, context.breaks || [])) fail('Attendance changed since HR raised this ticket. Reject it and ask HR to raise a new correction.',409);
+  if (existing && ['CHECKED_IN', 'ON_BREAK'].includes(existing.current_state) && !(hrTicket && dateKey(request.start_date) < indiaDate(now))) fail('An active workday cannot be regularized. Complete the workday first.', 409);
   const breaks = context.breaks || [];
   if (breaks.some(b => !b.break_end || new Date(b.break_start) < start || new Date(b.break_end) > end || new Date(b.break_end) < new Date(b.break_start))) fail('Existing break intervals do not fit the correction. Review them before approving.', 409);
   const rest = breaks.reduce((total, b) => total + Math.floor((new Date(b.break_end) - new Date(b.break_start)) / 60000), 0);
