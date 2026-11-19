@@ -14,9 +14,9 @@ import { listAttendanceCorrections, createAttendanceCorrection, correctionAudit 
 const router = express.Router();
 
 router.use(authenticateUser);
-router.get('/attendance-corrections', requireRoles('EMPLOYEE','HR_ADMIN','SUPER_ADMIN'), listAttendanceCorrections);
+router.get('/attendance-corrections', requireRoles('HR_ADMIN','SUPER_ADMIN'), listAttendanceCorrections);
 router.post('/attendance-corrections', requireRoles('HR_ADMIN'), createAttendanceCorrection);
-router.get('/attendance-corrections/:id/audit', requireRoles('EMPLOYEE','HR_ADMIN','SUPER_ADMIN'), correctionAudit);
+router.get('/attendance-corrections/:id/audit', requireRoles('HR_ADMIN','SUPER_ADMIN'), correctionAudit);
 
 // Employee & HR own requests
 router.get('/my', getMyRequests);

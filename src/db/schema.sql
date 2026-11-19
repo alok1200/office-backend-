@@ -148,3 +148,30 @@ CREATE TABLE IF NOT EXISTS notification_reads (
 
 -- Preserve recorded work mode when migrating existing application records.
 ALTER TABLE attendances ADD COLUMN IF NOT EXISTS mode VARCHAR(50);
+
+-- HR onboarding: extended employee record and company assets issued to employees.
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth DATE;
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS address TEXT;
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS emergency_contact_name VARCHAR(150);
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS emergency_contact_phone VARCHAR(50);
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES employees(id) ON DELETE SET NULL;
+-- "Others": free-form extra fields HR can add per employee, stored as [{label, value}].
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS custom_fields JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+CREATE TABLE IF NOT EXISTS company_assets (
+  id SERIAL PRIMARY KEY,
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  asset_type VARCHAR(50) NOT NULL,
+  asset_name VARCHAR(150) NOT NULL,
+  asset_tag VARCHAR(100),
+  serial_number VARCHAR(150),
+  condition VARCHAR(50) NOT NULL DEFAULT 'GOOD',
+  issued_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  returned_date DATE,
+  notes TEXT,
+  issued_by INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_company_assets_employee ON company_assets(employee_id);
+-- An asset tag can only be assigned to one person at a time.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_company_assets_active_tag ON company_assets(LOWER(asset_tag)) WHERE returned_date IS NULL AND asset_tag IS NOT NULL;
