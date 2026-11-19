@@ -63,6 +63,14 @@ export function resetRateLimit(key) {
   loginAttempts.delete(key);
 }
 
+export function clearRateLimitForIdentifiers(identifiers = []) {
+  const suffixes = identifiers.filter(Boolean).map(v => `:${String(v).trim().toLowerCase()}`);
+  if (!suffixes.length) return;
+  for (const key of loginAttempts.keys()) {
+    if (suffixes.some(suffix => key.endsWith(suffix))) loginAttempts.delete(key);
+  }
+}
+
 // In-memory active session tokens: token -> { userId, expiresAt }
 const activeSessions = new Map();
 
@@ -86,4 +94,10 @@ export function getSession(token) {
 
 export function revokeSession(token) {
   if (token) activeSessions.delete(token);
+}
+
+export function revokeUserSessions(userId) {
+  for (const [token, session] of activeSessions.entries()) {
+    if (session.userId === userId) activeSessions.delete(token);
+  }
 }

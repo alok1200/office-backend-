@@ -43,7 +43,7 @@ export async function listOffices(req, res) {
       return {
         ...o,
         radius_m: 50,
-        max_accuracy_m: Math.min(Number(o.max_accuracy_m ?? 50), 50),
+        max_accuracy_m: Math.min(Number(o.max_accuracy_m ?? 75), 75),
         timezone: o.timezone || 'Asia/Kolkata',
         office_ips: o.office_ips || [],
         is_primary: o.id === primary?.id,
@@ -78,7 +78,7 @@ export async function saveOffice(req, res) {
     const id = req.params.id ? officeId(req.params.id) : null;
     const data = validateOffice(req.body);
     data.radius_m = 50;
-    data.max_accuracy_m = Math.min(data.max_accuracy_m, 50);
+    data.max_accuracy_m = Math.min(data.max_accuracy_m, 75);
     const now = new Date().toISOString();
     let saved;
     client = await pool.connect();

@@ -317,3 +317,96 @@ export async function getMyAssets(req, res) {
     return res.json({ success: true, data: assets });
   } catch (error) { return respondError(res, error); }
 }
+
+/**
+ * PATCH /api/employees/:id/password — HR Admin resets a forgotten password for an Employee account.
+ */
+export async function resetEmployeePassword(req, res) {
+  let client;
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) fail('Invalid employee ID.');
+    const password = String(req.body?.password || '');
+    if (password.length < 8 || password.length > 128) fail('New password must be 8–128 characters.');
+
+    const { hashPassword, revokeUserSessions, clearRateLimitForIdentifiers } = await import('../utils/security.js');
+    const { hash, salt } = hashPassword(password);
+
+    client = await pool.connect();
+    await client.query('BEGIN');
+    const target = (await client.query(
+      'SELECT id, employee_id, email, first_name, last_name, role, is_active FROM employees WHERE id = $1 FOR UPDATE',
+      [id]
+    )).rows[0];
+    if (!target || !target.is_active) fail('Employee not found.', 404);
+    if (target.role !== 'EMPLOYEE') fail('HR Admin can only reset passwords for Employee accounts.', 403);
+
+    await client.query(
+      'UPDATE employees SET password_hash = $1, password_salt = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
+      [hash, salt, id]
+    );
+    await client.query(
+      "INSERT INTO admin_audit_log (actor_id, action, entity_type, entity_id, before_data, after_data) VALUES ($1,'RESET_EMPLOYEE_PASSWORD','employee',$2,NULL,$3)",
+      [req.user.id, id, JSON.stringify({ employee_id: target.employee_id, reset_by: req.user.id })]
+    );
+    await client.query(
+      "INSERT INTO notifications (recipient_id, title, message, category) VALUES ($1,$2,$3,'ANNOUNCEMENT')",
+      [id, 'Password Reset by HR', 'Your account password was reset by HR. Use your new password to sign in.']
+    );
+    await client.query('COMMIT');
+
+    revokeUserSessions(id);
+    clearRateLimitForIdentifiers([target.email, target.employee_id]);
+    return res.json({
+      success: true,
+      message: `Password updated for ${target.first_name} ${target.last_name} (${target.employee_id}).`
+    });
+  } catch (error) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    return respondError(res, error);
+  } finally { client?.release(); }
+}
+
+/**
+ * DELETE /api/employees/:id — HR Admin removes an Employee account when they leave the company.
+ * Soft-deactivates the account so login and directory access end immediately while preserving audit/attendance history.
+ */
+export async function deleteEmployee(req, res) {
+  let client;
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) fail('Invalid employee ID.');
+    if (id === req.user.id) fail('You cannot delete your own account.', 400);
+
+    const { revokeUserSessions, clearRateLimitForIdentifiers } = await import('../utils/security.js');
+
+    client = await pool.connect();
+    await client.query('BEGIN');
+    const target = (await client.query(
+      'SELECT id, employee_id, email, first_name, last_name, role, is_active FROM employees WHERE id = $1 FOR UPDATE',
+      [id]
+    )).rows[0];
+    if (!target || !target.is_active) fail('Employee not found.', 404);
+    if (target.role !== 'EMPLOYEE') fail('HR Admin can only delete Employee accounts.', 403);
+
+    await client.query(
+      'UPDATE employees SET is_active = false, can_record_attendance = false, attendance_enabled = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
+      [id]
+    );
+    await client.query(
+      "INSERT INTO admin_audit_log (actor_id, action, entity_type, entity_id, before_data, after_data) VALUES ($1,'DELETE_EMPLOYEE','employee',$2,$3,$4)",
+      [req.user.id, id, JSON.stringify({ employee_id: target.employee_id, email: target.email, is_active: true }), JSON.stringify({ employee_id: target.employee_id, is_active: false, deleted_by: req.user.id })]
+    );
+    await client.query('COMMIT');
+
+    revokeUserSessions(id);
+    clearRateLimitForIdentifiers([target.email, target.employee_id]);
+    return res.json({
+      success: true,
+      message: `${target.first_name} ${target.last_name} (${target.employee_id}) has been removed.`
+    });
+  } catch (error) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    return respondError(res, error);
+  } finally { client?.release(); }
+}

@@ -149,6 +149,14 @@ CREATE TABLE IF NOT EXISTS notification_reads (
 -- Preserve recorded work mode when migrating existing application records.
 ALTER TABLE attendances ADD COLUMN IF NOT EXISTS mode VARCHAR(50);
 
+-- One-time: raise the default GPS accuracy tolerance from 50 m to 75 m (faster punches). Later admin changes are kept.
+UPDATE office_locations SET max_accuracy_m = 75
+  WHERE max_accuracy_m = 50
+  AND NOT EXISTS (SELECT 1 FROM admin_audit_log WHERE action = 'MIGRATE_ACCURACY_75');
+INSERT INTO admin_audit_log (actor_id, action, entity_type, entity_id, before_data, after_data)
+  SELECT NULL, 'MIGRATE_ACCURACY_75', 'office_location', 0, '{"max_accuracy_m":50}', '{"max_accuracy_m":75}'
+  WHERE NOT EXISTS (SELECT 1 FROM admin_audit_log WHERE action = 'MIGRATE_ACCURACY_75');
+
 -- HR onboarding: extended employee record and company assets issued to employees.
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth DATE;
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS address TEXT;

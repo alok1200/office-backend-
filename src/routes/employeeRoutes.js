@@ -9,6 +9,8 @@ import {
   createEmployee,
   addEmployeeAsset,
   returnEmployeeAsset,
+  resetEmployeePassword,
+  deleteEmployee,
   forbidEmployeeEdit
 } from '../controllers/employeeController.js';
 
@@ -29,9 +31,10 @@ router.post('/company', requireRoles('HR_ADMIN'), createEmployee);
 router.get('/:id/details', requireRoles('HR_ADMIN'), getEmployeeDetails);
 router.post('/:id/assets', requireRoles('HR_ADMIN'), addEmployeeAsset);
 router.patch('/assets/:assetId/return', requireRoles('HR_ADMIN'), returnEmployeeAsset);
+router.patch('/:id/password', requireRoles('HR_ADMIN'), resetEmployeePassword);
 
-// Editing or deleting existing employees is still not allowed
+// Editing existing employees is still not allowed; HR Admin can delete Employee accounts
 router.put('/:id', forbidEmployeeEdit);
-router.delete('/:id', forbidEmployeeEdit);
+router.delete('/:id', requireRoles('HR_ADMIN'), deleteEmployee);
 
 export default router;
