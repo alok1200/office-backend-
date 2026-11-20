@@ -1,4 +1,4 @@
-export const tables = ['departments','employees','office_locations','holidays','attendances','attendance_breaks','requests','notifications','application_audit_log','admin_audit_log','notification_reads'];
+export const tables = ['departments','employees','office_locations','holidays','attendances','attendance_breaks','requests','notifications','application_audit_log','admin_audit_log','notification_reads','company_assets'];
 const identifier = value => `"${value.replaceAll('"','""')}"`;
 export async function importRecords(client, data) {
   const columns = (await client.query('SELECT table_name,column_name,data_type FROM information_schema.columns WHERE table_schema=current_schema()')).rows;
@@ -9,7 +9,7 @@ export async function importRecords(client, data) {
     for (const source of data[table] || []) {
       const row = { ...source };
       // Offices reference their updater; employee office assignments are restored second.
-      if (table === 'employees') delete row.office_id;
+      if (table === 'employees') { delete row.office_id; delete row.created_by; }
       const keys = Object.keys(row).filter(key => definition.has(key) && row[key] !== undefined);
       if (!keys.length) continue;
       const values = keys.map(key => definition.get(key) === 'jsonb' && row[key] !== null ? JSON.stringify(row[key]) : row[key]);
@@ -18,6 +18,8 @@ export async function importRecords(client, data) {
     }
     counts[table]=count;
   }
+  // Creators may appear later in the source array, so restore self-references after all accounts exist.
+  for (const user of data.employees || []) if (user.created_by != null) await client.query('UPDATE employees SET created_by=$1 WHERE id=$2',[user.created_by,user.id]);
   for (const user of data.employees || []) if (user.office_id && (data.office_locations || []).some(o=>o.id===user.office_id)) await client.query('UPDATE employees SET office_id=$1 WHERE id=$2',[user.office_id,user.id]);
   for (const table of tables) {
     if (!columns.some(c=>c.table_name===table && c.column_name==='id')) continue;

@@ -14,7 +14,7 @@ function respondError(res, error) {
 }
 export async function requestOptions(req, res) {
   try {
-    const year = Number(req.query.year) || Number(new Intl.DateTimeFormat('en', {
+    const year = req.query.year !== undefined ? Number(req.query.year) : Number(new Intl.DateTimeFormat('en', {
       year: 'numeric',
       timeZone: 'Asia/Kolkata'
     }).format(new Date()));
@@ -76,6 +76,8 @@ export async function createPersonalRequest(req, res) {
     await client.query('SELECT id FROM employees WHERE id = $1 FOR UPDATE', [req.user.id]);
     const data = makeData(await sqlContext(client.query.bind(client), req.user.id));
     request = (await client.query(`INSERT INTO requests (employee_id, request_type, start_date, end_date, reason, status, submission_date, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`, [data.employee_id, data.request_type, data.start_date, data.end_date, data.reason, data.status, data.submission_date, JSON.stringify(data.metadata)])).rows[0];
+    await client.query("INSERT INTO application_audit_log (application_id, actor_id, action, old_status, new_status, remark) VALUES ($1,$2,'submit',NULL,'PENDING','Submitted by request owner')", [request.id, req.user.id]);
+    await client.query("INSERT INTO notifications (recipient_id,title,message,category) SELECT id,$1,$2,'REQUEST' FROM employees WHERE role='SUPER_ADMIN' AND is_active=true AND id<>$3", [`New ${data.metadata.label} request #${request.id}`, `${req.user.first_name} ${req.user.last_name} submitted ${data.metadata.label} for ${data.start_date} to ${data.end_date}.`, req.user.id]);
     await client.query('COMMIT');
     res.status(201).json({
       success: true,

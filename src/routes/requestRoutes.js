@@ -1,5 +1,6 @@
 import express from 'express';
-import { createPersonalRequest } from '../controllers/superAdminRequestsController.js';
+import { createPersonalRequest, requestOptions, previewRequest } from '../controllers/superAdminRequestsController.js';
+import { employeeRequestPayload } from '../services/employeeRequestPolicy.js';
 import { authenticateUser, requireRoles } from '../middleware/auth.js';
 import {
   getMyRequests,
@@ -14,6 +15,11 @@ import { listAttendanceCorrections, createAttendanceCorrection, correctionAudit 
 const router = express.Router();
 
 router.use(authenticateUser);
+router.get('/options', requestOptions);
+router.post('/preview', (req, res) => {
+  try { req.body = employeeRequestPayload(req.body); return previewRequest(req, res); }
+  catch (error) { return res.status(error.status || 500).json({ success: false, error: error.message }); }
+});
 router.get('/attendance-corrections', requireRoles('HR_ADMIN','SUPER_ADMIN'), listAttendanceCorrections);
 router.post('/attendance-corrections', requireRoles('HR_ADMIN'), createAttendanceCorrection);
 router.get('/attendance-corrections/:id/audit', requireRoles('HR_ADMIN','SUPER_ADMIN'), correctionAudit);

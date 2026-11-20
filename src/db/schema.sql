@@ -183,3 +183,32 @@ CREATE TABLE IF NOT EXISTS company_assets (
 CREATE INDEX IF NOT EXISTS idx_company_assets_employee ON company_assets(employee_id);
 -- An asset tag can only be assigned to one person at a time.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_company_assets_active_tag ON company_assets(LOWER(asset_tag)) WHERE returned_date IS NULL AND asset_tag IS NOT NULL;
+
+-- Login identifiers are case-insensitive in the authentication service.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_email_casefold ON employees(LOWER(email));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_code_casefold ON employees(LOWER(employee_id));
+-- One employee may have only one currently open break on a workday.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_breaks_one_open ON attendance_breaks(attendance_id) WHERE break_end IS NULL;
+
+-- Additive integrity constraints, installed once and validated against existing data.
+DO $$
+DECLARE rule RECORD;
+BEGIN
+  FOR rule IN SELECT * FROM (VALUES
+    ('attendances','attendance_minutes_nonnegative','total_work_minutes >= 0 AND total_break_minutes >= 0'),
+    ('attendances','attendance_punch_order','check_in IS NULL OR check_out IS NULL OR check_out > check_in'),
+    ('attendance_breaks','break_minutes_nonnegative','duration_minutes >= 0'),
+    ('attendance_breaks','break_time_order','break_end IS NULL OR break_end >= break_start'),
+    ('requests','request_date_order','end_date >= start_date'),
+    ('company_assets','asset_return_order','returned_date IS NULL OR returned_date >= issued_date'),
+    ('office_locations','office_coordinate_range','latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180'),
+    ('office_locations','office_positive_limits','radius_m > 0 AND max_accuracy_m > 0'),
+    ('office_locations','office_ips_array','jsonb_typeof(office_ips) = ''array'''),
+    ('employees','employee_custom_fields_array','jsonb_typeof(custom_fields) = ''array''')
+  ) AS rules(table_name,constraint_name,expression)
+  LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname=rule.constraint_name AND conrelid=format('%I.%I',current_schema(),rule.table_name)::regclass) THEN
+      EXECUTE format('ALTER TABLE %I ADD CONSTRAINT %I CHECK (%s)',rule.table_name,rule.constraint_name,rule.expression);
+    END IF;
+  END LOOP;
+END $$;

@@ -18,12 +18,13 @@ const safeUser = e => ({
   id: e.id,
   name: `${e.first_name || ''} ${e.last_name || ''}`.trim(),
   code: e.employee_id,
+  email: e.email,
   role: e.role,
   office_id: e.office_id || null
 });
 async function sqlSnapshot(run) {
   const offices = (await run('SELECT * FROM office_locations WHERE is_active = true ORDER BY is_primary DESC, id DESC')).rows;
-  const users = (await run('SELECT id, first_name, last_name, employee_id, role, office_id FROM employees WHERE is_active = true ORDER BY first_name, id')).rows;
+  const users = (await run('SELECT id, first_name, last_name, employee_id, email, role, office_id FROM employees WHERE is_active = true ORDER BY first_name, id')).rows;
   return {
     offices,
     users

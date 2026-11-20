@@ -4,6 +4,7 @@ import { buildMonthlyReport, reportPeriod, indiaDate } from '../services/superAd
 import { CORRECTION_WORKFLOW } from '../services/attendanceCorrections.js';
 import { planDecision } from '../services/superAdminDecision.js';
 import { csvExport, xlsxExport } from '../utils/reportExport.js';
+import {planAttendanceEdit} from '../services/attendanceEdit.js';
 const errorResponse = (res, error) => res.status(error.status || 500).json({
   success: false,
   error: error.status ? error.message : 'Could not complete the operation. Please retry.'
@@ -160,141 +161,22 @@ export async function getAllRequests(req, res) {
 export async function editAttendance(req, res) {
   let client;
   try {
-    const {
-      employee_id,
-      work_date,
-      check_in,
-      check_out,
-      status,
-      notes,
-      request_id
-    } = req.body;
-
-    const empId = Number(employee_id);
-    if (!Number.isSafeInteger(empId) || empId <= 0) {
-      return res.status(400).json({ success: false, error: 'Valid employee ID is required.' });
-    }
-    if (!work_date || !/^\d{4}-\d{2}-\d{2}$/.test(String(work_date).slice(0, 10))) {
-      return res.status(400).json({ success: false, error: 'Valid work date (YYYY-MM-DD) is required.' });
-    }
-
-    if (request_id) {
-      const linked = (await query('SELECT metadata FROM requests WHERE id=$1', [Number(request_id)])).rows[0];
-      if (linked?.metadata?.workflow === CORRECTION_WORKFLOW) throw Object.assign(new Error('Review this HR attendance ticket through Approve or Reject; direct editing cannot resolve it.'), { status: 409 });
-    }
-    const dateStr = String(work_date).slice(0, 10);
-    let checkInIso = null;
-    let checkOutIso = null;
-    let workMinutes = 0;
-
-    if (check_in) {
-      const inDate = check_in.includes('T') ? new Date(check_in) : new Date(`${dateStr}T${check_in}:00+05:30`);
-      if (!Number.isNaN(inDate.getTime())) {
-        checkInIso = inDate.toISOString();
-      }
-    }
-
-    if (check_out) {
-      const outDate = check_out.includes('T') ? new Date(check_out) : new Date(`${dateStr}T${check_out}:00+05:30`);
-      if (!Number.isNaN(outDate.getTime())) {
-        checkOutIso = outDate.toISOString();
-      }
-    }
-
-    if (checkInIso && checkOutIso) {
-      const diffMs = new Date(checkOutIso) - new Date(checkInIso);
-      if (diffMs > 0) {
-        workMinutes = Math.floor(diffMs / 60000);
-      }
-    }
-
-    // Determine status
-    let finalStatus = status;
-    if (!finalStatus || finalStatus === 'AUTO') {
-      if (workMinutes >= 300) {
-        finalStatus = 'PRESENT';
-      } else if (workMinutes > 0) {
-        finalStatus = 'HALF_DAY';
-      } else if (checkInIso) {
-        finalStatus = 'PRESENT';
-      } else {
-        finalStatus = 'ABSENT';
-      }
-    }
-
-    const currentState = checkOutIso ? 'CHECKED_OUT' : checkInIso ? 'CHECKED_IN' : 'NOT_CHECKED_IN';
-    const finalNotes = notes?.trim() || 'Attendance edited by Super Admin';
-    const nowIso = new Date().toISOString();
-
-    client = await pool.connect();
-    await client.query('BEGIN');
-
-    // Upsert into attendances table
-    const attendanceRes = await client.query(`
-      INSERT INTO attendances (
-        employee_id, work_date, check_in, check_out, current_state, status,
-        total_work_minutes, total_break_minutes, notes, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9)
-      ON CONFLICT (employee_id, work_date)
-      DO UPDATE SET
-        check_in = EXCLUDED.check_in,
-        check_out = EXCLUDED.check_out,
-        current_state = EXCLUDED.current_state,
-        status = EXCLUDED.status,
-        total_work_minutes = EXCLUDED.total_work_minutes,
-        notes = EXCLUDED.notes,
-        updated_at = EXCLUDED.updated_at
-      RETURNING *
-    `, [empId, dateStr, checkInIso, checkOutIso, currentState, finalStatus, workMinutes, finalNotes, nowIso]);
-
-    const updatedAttendance = attendanceRes.rows[0];
-
-    // If linked to a request/ticket, approve the request and update metadata
-    if (request_id) {
-      const reqId = Number(request_id);
-      if (Number.isSafeInteger(reqId) && reqId > 0) {
-        await client.query(`
-          UPDATE requests
-          SET status = 'APPROVED',
-              decision_by = $1,
-              decision_date = $2,
-              decision_remarks = $3,
-              metadata = jsonb_set(
-                COALESCE(metadata, '{}'::jsonb),
-                '{correction,after}',
-                $4::jsonb
-              )
-          WHERE id = $5
-        `, [req.user.id, nowIso, finalNotes, JSON.stringify(updatedAttendance), reqId]);
-
-        await client.query(`
-          INSERT INTO application_audit_log (application_id, actor_id, action, old_status, new_status, remark)
-          VALUES ($1, $2, 'approve', 'PENDING', 'APPROVED', $3)
-        `, [reqId, req.user.id, JSON.stringify({ note: finalNotes, attendance_id: updatedAttendance.id })]);
-      }
-    }
-
-    // Send notification to the employee
-    const notifTitle = `Attendance updated for ${dateStr}`;
-    const notifMsg = `Your attendance on ${dateStr} was updated by Super Admin (${finalStatus}). Notes: ${finalNotes}`;
-    await client.query(`
-      INSERT INTO notifications (recipient_id, title, message, category, is_read, created_at)
-      VALUES ($1, $2, $3, 'ATTENDANCE', false, $4)
-    `, [empId, notifTitle, notifMsg, nowIso]);
-
-    await client.query('COMMIT');
-
-    return res.json({
-      success: true,
-      message: 'Attendance record updated successfully by Super Admin.',
-      data: updatedAttendance
-    });
-  } catch (error) {
-    if (client) await client.query('ROLLBACK');
-    return errorResponse(res, error);
-  } finally {
-    client?.release();
-  }
+    if(req.body?.request_id!=null && req.body.request_id!=='')throw Object.assign(new Error('Review linked requests through Approve or Reject; direct editing cannot resolve a request.'),{status:409});
+    const preliminary=planAttendanceEdit(req.body);
+    client=await pool.connect();await client.query('BEGIN');
+    const target=(await client.query('SELECT id,role,is_active,joining_date FROM employees WHERE id=$1 FOR UPDATE',[preliminary.employee_id])).rows[0];
+    if(!target||!target.is_active)throw Object.assign(new Error('Employee not found.'),{status:404});
+    if(target.role==='SUPER_ADMIN')throw Object.assign(new Error('Super Admin accounts do not record attendance.'),{status:400});
+    if(target.joining_date&&preliminary.work_date<dateKey(target.joining_date))throw Object.assign(new Error('Attendance date is before the employee joining date.'),{status:400});
+    const before=(await client.query('SELECT * FROM attendances WHERE employee_id=$1 AND work_date=$2 FOR UPDATE',[target.id,preliminary.work_date])).rows[0]||null;
+    const breaks=before?(await client.query('SELECT * FROM attendance_breaks WHERE attendance_id=$1 ORDER BY id',[before.id])).rows:[];
+    const entry=planAttendanceEdit(req.body,before,breaks);
+    const updated=(await client.query(`INSERT INTO attendances (employee_id,work_date,check_in,check_out,current_state,status,total_work_minutes,total_break_minutes,notes,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      ON CONFLICT(employee_id,work_date) DO UPDATE SET check_in=EXCLUDED.check_in,check_out=EXCLUDED.check_out,current_state=EXCLUDED.current_state,status=EXCLUDED.status,total_work_minutes=EXCLUDED.total_work_minutes,total_break_minutes=EXCLUDED.total_break_minutes,notes=EXCLUDED.notes,updated_at=EXCLUDED.updated_at RETURNING *`,[entry.employee_id,entry.work_date,entry.check_in,entry.check_out,entry.current_state,entry.status,entry.total_work_minutes,entry.total_break_minutes,entry.notes,entry.updated_at])).rows[0];
+    await client.query("INSERT INTO admin_audit_log(actor_id,action,entity_type,entity_id,before_data,after_data) VALUES ($1,'EDIT_ATTENDANCE','attendance',$2,$3,$4)",[req.user.id,updated.id,JSON.stringify(before),JSON.stringify(updated)]);
+    await client.query("INSERT INTO notifications(recipient_id,title,message,category) VALUES ($1,$2,$3,'ATTENDANCE')",[target.id,'Attendance updated for '+entry.work_date,'Your attendance was updated by Super Admin ('+entry.status+'). Notes: '+entry.notes]);
+    await client.query('COMMIT');res.json({success:true,message:'Attendance updated and recorded in the audit log.',data:updated});
+  }catch(error){if(client)await client.query('ROLLBACK');errorResponse(res,error);}finally{client?.release();}
 }
 export async function reviewRequest(req, res) {
   let client;
@@ -329,11 +211,26 @@ export async function reviewRequest(req, res) {
     if (plan.attendance) {
       const a = plan.attendance;
       const corrected = await client.query(`INSERT INTO attendances (employee_id, work_date, check_in, check_out, current_state, status, total_work_minutes, total_break_minutes, notes, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-          ON CONFLICT (employee_id, work_date) DO UPDATE SET check_in=EXCLUDED.check_in, check_out=EXCLUDED.check_out, current_state=EXCLUDED.current_state, status=EXCLUDED.status, total_work_minutes=EXCLUDED.total_work_minutes, total_break_minutes=EXCLUDED.total_break_minutes, notes=EXCLUDED.notes, updated_at=EXCLUDED.updated_at WHERE (attendances.current_state NOT IN ('CHECKED_IN','ON_BREAK') OR $11::boolean) RETURNING id`, [a.employee_id, a.work_date, a.check_in, a.check_out, a.current_state, a.status, a.total_work_minutes, a.total_break_minutes, a.notes, a.updated_at, hrTicket && dateKey(request.start_date) < indiaDate(now)]);
+          ON CONFLICT (employee_id, work_date) DO UPDATE SET check_in=EXCLUDED.check_in, check_out=EXCLUDED.check_out, current_state=EXCLUDED.current_state, status=EXCLUDED.status, total_work_minutes=EXCLUDED.total_work_minutes, total_break_minutes=EXCLUDED.total_break_minutes, notes=EXCLUDED.notes, updated_at=EXCLUDED.updated_at WHERE (attendances.current_state NOT IN ('CHECKED_IN','ON_BREAK') OR $11::boolean) RETURNING id`, [a.employee_id, a.work_date, a.check_in, a.check_out, a.current_state, a.status, a.total_work_minutes, a.total_break_minutes, a.notes, a.updated_at, (hrTicket && Boolean(request.metadata?.requested_status)) || (dateKey(request.start_date) < indiaDate(now) && (hrTicket || attendance?.current_state === 'CHECKED_IN'))]);
       correctedAttendanceId = corrected.rows[0]?.id;
       if (!corrected.rowCount) throw Object.assign(new Error('The employee has an active workday. Refresh before regularizing.'), {
         status: 409
       });
+    }
+    if (plan.attendanceDates?.length) {
+      for (const entry of plan.attendanceDates) {
+        const existing = (await client.query('SELECT * FROM attendances WHERE employee_id=$1 AND work_date=$2 FOR UPDATE', [entry.employee_id, entry.work_date])).rows[0];
+        if (existing && (['CHECKED_IN', 'ON_BREAK'].includes(existing.current_state) || (entry.status !== 'HALF_DAY' && (existing.check_in || existing.check_out)))) {
+          throw Object.assign(new Error('These dates contain recorded attendance. Review the punches before approving time off.'), { status: 409 });
+        }
+        await client.query(
+          `INSERT INTO attendances (employee_id, work_date, current_state, status, total_work_minutes, total_break_minutes, notes, updated_at)
+           VALUES ($1, $2, 'NOT_CHECKED_IN', $3, 0, 0, $4, $5)
+           ON CONFLICT (employee_id, work_date)
+           DO UPDATE SET status = EXCLUDED.status, notes = EXCLUDED.notes, updated_at = EXCLUDED.updated_at`,
+          [entry.employee_id, entry.work_date, entry.status, entry.notes, entry.updated_at]
+        );
+      }
     }
     reviewed = (await client.query('UPDATE requests SET status=$1, decision_by=$2, decision_date=$3, decision_remarks=$4, metadata=$5 WHERE id=$6 RETURNING *', [plan.status, req.user.id, now.toISOString(), plan.note, JSON.stringify(plan.metadata), id])).rows[0];
     await client.query('INSERT INTO application_audit_log (application_id, actor_id, action, old_status, new_status, remark) VALUES ($1,$2,$3,$4,$5,$6)', [id, req.user.id, plan.status === 'APPROVED' ? 'approve' : 'reject', 'PENDING', plan.status, JSON.stringify({
@@ -370,7 +267,7 @@ async function loadReport(req) {
     status: 400
   });
   let data;
-  const results = await Promise.all([query("SELECT id, employee_id, first_name, last_name, department_name, joining_date, role, is_active FROM employees WHERE is_active = true AND role <> 'SUPER_ADMIN' ORDER BY first_name, id"), query('SELECT * FROM attendances WHERE work_date >= $1 AND work_date <= $2', [period.first, period.last]), query('SELECT b.* FROM attendance_breaks b JOIN attendances a ON a.id=b.attendance_id WHERE a.work_date >= $1 AND a.work_date <= $2', [period.first, period.last]), query('SELECT * FROM holidays WHERE holiday_date >= $1 AND holiday_date <= $2', [period.first, period.last]), query("SELECT * FROM requests WHERE status = 'APPROVED' AND request_type = 'LEAVE' AND start_date <= $2 AND end_date >= $1", [period.first, period.last])]);
+  const results = await Promise.all([query("SELECT id, employee_id, first_name, last_name, department_name, joining_date, role, is_active FROM employees WHERE is_active = true AND role <> 'SUPER_ADMIN' ORDER BY first_name, id"), query('SELECT * FROM attendances WHERE work_date >= $1 AND work_date <= $2', [period.first, period.last]), query('SELECT b.* FROM attendance_breaks b JOIN attendances a ON a.id=b.attendance_id WHERE a.work_date >= $1 AND a.work_date <= $2', [period.first, period.last]), query('SELECT * FROM holidays WHERE holiday_date >= $1 AND holiday_date <= $2', [period.first, period.last]), query("SELECT * FROM requests WHERE status = 'APPROVED' AND request_type IN ('LEAVE','WFH','OTHER','HOLIDAY') AND start_date <= $2 AND end_date >= $1", [period.first, period.last])]);
   data = {
     employees: results[0].rows,
     attendances: results[1].rows,

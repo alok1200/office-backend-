@@ -5,6 +5,7 @@ export const requestCategories = {
   WFH: { label: 'Remote Work', type: 'WFH', allowance: 24 },
   OFFICIAL: { label: 'Official work outside', type: 'OTHER' },
   REGULARIZATION: { label: 'Attendance regularization', type: 'REGULARIZATION' },
+  HOLIDAY: { label: 'Optional / floating holiday', type: 'HOLIDAY' },
 };
 export const dateKey = value => value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
 const invalid = message => { const error = new Error(message); error.status = 400; throw error; };
@@ -23,7 +24,7 @@ export function calculateRequest(payload, holidays = []) {
   const dates = [];
   for (const day = new Date(`${start_date}T00:00:00Z`), end = new Date(`${end_date}T00:00:00Z`); day <= end; day.setUTCDate(day.getUTCDate() + 1)) {
     const key = dateKey(day);
-    if (day.getUTCDay() !== 0 && !holidayDates.has(key)) dates.push(key);
+    if (category === 'HOLIDAY' || (day.getUTCDay() !== 0 && !holidayDates.has(key))) dates.push(key);
   }
   if (!dates.length) invalid('The selected dates contain no working days. Sundays and holidays are skipped.');
   return { category, dates, days: half_day ? 0.5 : dates.length, year: Number(start_date.slice(0, 4)), half_day };
@@ -42,7 +43,7 @@ export function validateSubmission(payload, context) {
   if (typeof payload.reason !== 'string' || payload.reason.trim().length < 10 || payload.reason.trim().length > 2000) invalid('Reason must contain 10 to 2000 characters.');
   const balance = getAllowanceBalances(context.requests, calculation.year).find(b => b.category === calculation.category);
   if (balance && calculation.days > balance.remaining) invalid(`Only ${balance.remaining} day(s) remain for ${balance.label}. Pending requests reserve your balance.`);
-  const overlaps = context.requests.some(r => ['PENDING', 'APPROVED'].includes(r.status) && dateKey(r.start_date) <= payload.end_date && dateKey(r.end_date) >= payload.start_date);
+  const overlaps = context.requests.some(r => ['PENDING', 'APPROVED'].includes(r.status) && calculation.dates.some(day => Array.isArray(r.metadata?.dates) ? r.metadata.dates.includes(day) : dateKey(r.start_date) <= day && dateKey(r.end_date) >= day));
   if (overlaps) invalid('You already have a pending or approved request overlapping these dates.');
   return calculation;
 }

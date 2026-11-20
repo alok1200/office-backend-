@@ -1,4 +1,5 @@
 import { dateKey } from './superAdminRequestPolicy.js';
+import { plannedRequestForDate, resolveAttendanceStatus } from './plannedAttendance.js';
 export const indiaDate = (value = new Date()) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(value);
 export function reportPeriod(input) {
   const year = Number(input.year), month = Number(input.month);
@@ -21,15 +22,8 @@ export function buildMonthlyReport({ employees, attendances, breaks = [], holida
       const workDate = `${period.prefix}-${String(day).padStart(2, '0')}`;
       if (employee.joining_date && workDate < dateKey(employee.joining_date)) continue;
       const attendance = attMap.get(`${employee.id}:${workDate}`);
-      const leave = requests.find(r => r.employee_id === employee.id && r.status === 'APPROVED' && r.request_type === 'LEAVE' && (r.metadata?.dates ? r.metadata.dates.includes(workDate) : dateKey(r.start_date) <= workDate && dateKey(r.end_date) >= workDate));
-      let status = attendance?.status;
-      if (!status || status === 'ABSENT') {
-        if (holidayMap.has(workDate)) status = 'HOLIDAY';
-        else if (new Date(`${workDate}T12:00:00Z`).getUTCDay() === 0) status = 'WEEKLY_OFF';
-        else if (leave) status = leave.metadata?.half_day ? 'HALF_DAY' : 'LEAVE';
-        else if (workDate > today) status = 'FUTURE';
-        else if (!status) status = workDate === today ? 'NOT_CHECKED_IN' : 'ABSENT';
-      }
+      const planned = plannedRequestForDate(requests, employee.id, workDate);
+      const status=resolveAttendanceStatus({attendance,holiday:holidayMap.get(workDate),planned,workDate,today});
       let work = attendance?.total_work_minutes || 0, rest = attendance?.total_break_minutes || 0;
       if (attendance?.check_in && ['CHECKED_IN', 'ON_BREAK'].includes(attendance.current_state)) {
         rest = (breakMap.get(attendance.id) || []).reduce((sum, b) => sum + Math.max(0, Math.floor(((b.break_end ? new Date(b.break_end) : now) - new Date(b.break_start)) / 60000)), 0);

@@ -47,12 +47,14 @@ app.use('/api/requests', requestRoutes);
 app.use('/api/employees', employeeRoutes);
 app.use('/api/holidays', holidayRoutes);
 app.use('/api/super-admin', superAdminRoutes);
+app.use('/api', (req, res) => res.status(404).json({ success: false, error: 'API endpoint not found.' }));
 
 // Serve built frontend
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const frontendDist = fileURLToPath(new URL('../../frontend/dist/',import.meta.url));
 app.use(express.static(frontendDist));
+app.use(['/assets', '/branding'], (req, res) => res.status(404).end());
 // For SPA routes, fallback to index.html
 app.get('*', (req, res) => {
   res.sendFile(path.join(frontendDist, 'index.html'));
@@ -60,6 +62,9 @@ app.get('*', (req, res) => {
 
 // Global Error Handler
 app.use((err, req, res, next) => {
+  if (err.type === 'entity.parse.failed') {
+    return res.status(400).json({ success: false, error: 'Request body must contain valid JSON.' });
+  }
   console.error('Unhandled Server Error:', err);
   res.status(500).json({
     success: false,

@@ -1,4 +1,5 @@
 import { query, pool } from '../db/index.js';
+import {reportPeriod, indiaDate} from '../services/superAdminAttendanceReport.js';
 
 /**
  * GET /api/employees/me
@@ -70,13 +71,12 @@ export async function getCompanyEmployees(req, res) {
  */
 export async function getEmployeeAttendanceHistory(req, res) {
   try {
-    const targetEmpId = parseInt(req.params.id, 10);
-    const year = parseInt(req.query.year, 10) || new Date().getFullYear();
-    const month = parseInt(req.query.month, 10) || new Date().getMonth() + 1;
-    const monthStr = String(month).padStart(2, '0');
-    const startPattern = `${year}-${monthStr}-01`;
-    const lastDay = new Date(year, month, 0).getDate();
-    const endPattern = `${year}-${monthStr}-${String(lastDay).padStart(2, '0')}`;
+    const targetEmpId = Number(req.params.id);
+    if (!Number.isSafeInteger(targetEmpId) || targetEmpId <= 0) return res.status(400).json({success:false,error:'Invalid employee ID.'});
+    const today=indiaDate();
+    const {first:startPattern,last:endPattern}=reportPeriod({year:req.query.year ?? today.slice(0,4),month:req.query.month ?? today.slice(5,7)});
+    const target=(await query('SELECT id FROM employees WHERE id=$1',[targetEmpId])).rows[0];
+    if (!target) return res.status(404).json({success:false,error:'Employee not found.'});
     let attendances = [];
     const result = await query(`SELECT a.*, COALESCE(json_agg(b.*) FILTER (WHERE b.id IS NOT NULL), '[]') as breaks
          FROM attendances a
@@ -90,7 +90,7 @@ export async function getEmployeeAttendanceHistory(req, res) {
       data: attendances
     });
   } catch (err) {
-    return res.status(500).json({
+    return res.status(err.status || 500).json({
       success: false,
       error: err.message
     });
@@ -125,7 +125,7 @@ const text = (value, max, label, required = false) => {
 const dateValue = (value, label, required = false) => {
   const v = String(value ?? '').trim();
   if (!v) { if (required) fail(`${label} is required.`); return null; }
-  if (!DATE_RE.test(v) || Number.isNaN(new Date(`${v}T00:00:00Z`).getTime())) fail(`${label} must be a valid date.`);
+  if (!DATE_RE.test(v) || Number.isNaN(new Date(`${v}T00:00:00Z`).getTime()) || new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) !== v) fail(`${label} must be a valid date.`);
   return v;
 };
 const respondError = (res, error) => {
@@ -175,10 +175,19 @@ function validateCustomFields(raw) {
 
 /**
  * POST /api/employees/company
- * HR Admin / Super Admin onboard a new employee together with issued company assets.
+ * HR Admin onboards a new employee together with issued company assets.
  * Only EMPLOYEE accounts can be created here, so HR cannot grant themselves or others elevated roles.
  */
 export async function createEmployee(req, res) {
+  return createAccount(req, res, 'EMPLOYEE');
+}
+
+// Mounted only under the Super Admin router; the submitted role is never trusted.
+export async function createHRAdmin(req, res) {
+  return createAccount(req, res, 'HR_ADMIN');
+}
+
+async function createAccount(req, res, accountRole) {
   let client;
   try {
     const b = req.body || {};
@@ -201,7 +210,8 @@ export async function createEmployee(req, res) {
     const requestedCode = text(b.employee_id, 50, 'Employee ID');
     if (requestedCode && !/^[A-Za-z0-9_-]+$/.test(requestedCode)) fail('Employee ID may only contain letters, numbers, hyphen and underscore.');
     const custom_fields = validateCustomFields(b.custom_fields);
-    const rawAssets = Array.isArray(b.assets) ? b.assets : [];
+    if (b.assets != null && !Array.isArray(b.assets)) fail('Assets must be a list.');
+    const rawAssets = b.assets || [];
     if (rawAssets.length > 25) fail('At most 25 assets can be issued at onboarding.');
     const assets = rawAssets.map(a => validateAsset(a, joining_date));
     const tags = assets.map(a => a.asset_tag?.toLowerCase()).filter(Boolean);
@@ -218,25 +228,27 @@ export async function createEmployee(req, res) {
       const last = (await client.query("SELECT COALESCE(MAX(NULLIF(regexp_replace(employee_id, '\\D', '', 'g'), '')::bigint), 1000) AS n FROM employees WHERE employee_id ~ '^KNV-[0-9]+$'")).rows[0];
       employee_id = `KNV-${Number(last.n) + 1}`;
     }
+    const duplicate=(await client.query('SELECT email, employee_id FROM employees WHERE LOWER(email)=LOWER($1) OR LOWER(employee_id)=LOWER($2) LIMIT 1', [email, employee_id])).rows[0];
+    if (duplicate) fail(duplicate.email.toLowerCase() === email ? 'That email address is already in use.' : 'That employee ID is already in use.', 409);
     const dept = (await client.query('SELECT id, name FROM departments WHERE LOWER(name) = LOWER($1)', [department_name])).rows[0];
     const office = (await client.query('SELECT id FROM office_locations WHERE is_primary = true AND is_active = true LIMIT 1')).rows[0];
     const employee = (await client.query(
       `INSERT INTO employees (employee_id, email, first_name, last_name, role, department_id, department_name, designation, phone, joining_date,
          password_hash, password_salt, can_record_attendance, attendance_enabled, is_active, date_of_birth, address, emergency_contact_name, emergency_contact_phone, created_by, office_id, custom_fields)
-       VALUES ($1,$2,$3,$4,'EMPLOYEE',$5,$6,$7,$8,$9,$10,$11,true,true,true,$12,$13,$14,$15,$16,$17,$18)
+       VALUES ($1,$2,$3,$4,$19,$5,$6,$7,$8,$9,$10,$11,true,true,true,$12,$13,$14,$15,$16,$17,$18)
        RETURNING ${PUBLIC_COLUMNS}`,
       [employee_id, email, first_name, last_name, dept?.id || null, dept?.name || department_name, designation, phone, joining_date,
-        hash, salt, date_of_birth, address, emergency_contact_name, emergency_contact_phone, req.user.id, office?.id || null, JSON.stringify(custom_fields)]
+        hash, salt, date_of_birth, address, emergency_contact_name, emergency_contact_phone, req.user.id, office?.id || null, JSON.stringify(custom_fields), accountRole]
     )).rows[0];
     const savedAssets = [];
     for (const asset of assets) savedAssets.push(await insertAsset(client, employee.id, asset, req.user.id));
     await client.query(
-      "INSERT INTO admin_audit_log (actor_id, action, entity_type, entity_id, before_data, after_data) VALUES ($1,'CREATE_EMPLOYEE','employee',$2,NULL,$3)",
-      [req.user.id, employee.id, JSON.stringify({ employee, assets: savedAssets })]
+      "INSERT INTO admin_audit_log (actor_id, action, entity_type, entity_id, before_data, after_data) VALUES ($1,$4,'employee',$2,NULL,$3)",
+      [req.user.id, employee.id, JSON.stringify({ employee, assets: savedAssets }), accountRole === 'HR_ADMIN' ? 'CREATE_HR_ADMIN' : 'CREATE_EMPLOYEE']
     );
     await client.query(
       "INSERT INTO notifications (recipient_id, title, message, category) VALUES ($1,$2,$3,'ANNOUNCEMENT')",
-      [employee.id, 'Welcome to KNOOVIQ', 'Your account was created by HR. Sign in with your work email and the temporary password you were given.']
+      [employee.id, 'Welcome to KNOOVIQ', `Your ${accountRole === 'HR_ADMIN' ? 'HR Admin account was created by Super Admin' : 'account was created by HR'}. Sign in with your work email and the password you were given.`]
     );
     await client.query('COMMIT');
     return res.status(201).json({ success: true, message: `${first_name} ${last_name} (${employee.employee_id}) was added.`, data: { ...employee, assets: savedAssets } });
@@ -339,7 +351,8 @@ export async function resetEmployeePassword(req, res) {
       [id]
     )).rows[0];
     if (!target || !target.is_active) fail('Employee not found.', 404);
-    if (target.role !== 'EMPLOYEE') fail('HR Admin can only reset passwords for Employee accounts.', 403);
+    if (req.user.role === 'HR_ADMIN' && target.role !== 'EMPLOYEE') fail('HR Admin can only reset passwords for Employee accounts.', 403);
+    if (req.user.role === 'SUPER_ADMIN' && target.role !== 'HR_ADMIN') fail('Super Admin can only reset passwords for HR Admin accounts here.', 403);
 
     await client.query(
       'UPDATE employees SET password_hash = $1, password_salt = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
@@ -387,15 +400,19 @@ export async function deleteEmployee(req, res) {
       [id]
     )).rows[0];
     if (!target || !target.is_active) fail('Employee not found.', 404);
-    if (target.role !== 'EMPLOYEE') fail('HR Admin can only delete Employee accounts.', 403);
+    if (req.user.role === 'HR_ADMIN' && target.role !== 'EMPLOYEE') fail('HR Admin can only delete Employee accounts.', 403);
+    if (req.user.role === 'SUPER_ADMIN' && target.role !== 'HR_ADMIN') fail('Super Admin can only delete HR Admin accounts here.', 403);
 
+    // Clear password credentials and release the email address while keeping audit/attendance foreign keys intact.
+    const archivedEmail = `deleted-${id}-${Date.now()}@deleted.local`;
     await client.query(
-      'UPDATE employees SET is_active = false, can_record_attendance = false, attendance_enabled = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
-      [id]
+      'UPDATE employees SET is_active = false, email = $1, password_hash = NULL, password_salt = NULL, can_record_attendance = false, attendance_enabled = false, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+      [archivedEmail, id]
     );
+    const auditAction = target.role === 'HR_ADMIN' ? 'DELETE_HR_ADMIN' : 'DELETE_EMPLOYEE';
     await client.query(
-      "INSERT INTO admin_audit_log (actor_id, action, entity_type, entity_id, before_data, after_data) VALUES ($1,'DELETE_EMPLOYEE','employee',$2,$3,$4)",
-      [req.user.id, id, JSON.stringify({ employee_id: target.employee_id, email: target.email, is_active: true }), JSON.stringify({ employee_id: target.employee_id, is_active: false, deleted_by: req.user.id })]
+      'INSERT INTO admin_audit_log (actor_id, action, entity_type, entity_id, before_data, after_data) VALUES ($1,$2,$3,$4,$5,$6)',
+      [req.user.id, auditAction, 'employee', id, JSON.stringify({ employee_id: target.employee_id, email: target.email, role: target.role, is_active: true }), JSON.stringify({ employee_id: target.employee_id, role: target.role, is_active: false, credentials_cleared: true, deleted_by: req.user.id })]
     );
     await client.query('COMMIT');
 

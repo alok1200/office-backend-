@@ -5,8 +5,10 @@ import { matchOfficeIP, peerAddress } from '../services/officeNetworks.js';
 import { listOffices, saveOffice, deleteOffice, officeAuditLog } from '../controllers/superAdminOfficesController.js';
 import { requestOptions, previewRequest, createPersonalRequest, cancelPersonalRequest } from '../controllers/superAdminRequestsController.js';
 import { pendingApprovals, reviewRequest, monthlyAttendance, exportMonthlyAttendance, getHRRequests, getAllRequests, editAttendance } from '../controllers/superAdminOperationsController.js';
+import { createHRAdmin } from '../controllers/employeeController.js';
 const router = express.Router();
 router.use(authenticateUser, requireRoles('SUPER_ADMIN'));
+router.post('/hr-admins', createHRAdmin);
 
 // This installation has one organization. Only return configured office data.
 router.get('/dashboard', async (req, res, next) => {

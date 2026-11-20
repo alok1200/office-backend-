@@ -31,10 +31,10 @@ router.post('/company', requireRoles('HR_ADMIN'), createEmployee);
 router.get('/:id/details', requireRoles('HR_ADMIN'), getEmployeeDetails);
 router.post('/:id/assets', requireRoles('HR_ADMIN'), addEmployeeAsset);
 router.patch('/assets/:assetId/return', requireRoles('HR_ADMIN'), returnEmployeeAsset);
-router.patch('/:id/password', requireRoles('HR_ADMIN'), resetEmployeePassword);
+router.patch('/:id/password', requireRoles('HR_ADMIN', 'SUPER_ADMIN'), resetEmployeePassword);
 
-// Editing existing employees is still not allowed; HR Admin can delete Employee accounts
+// Editing existing employees is still not allowed; HR Admin can delete Employees, Super Admin can delete HR Admins
 router.put('/:id', forbidEmployeeEdit);
-router.delete('/:id', requireRoles('HR_ADMIN'), deleteEmployee);
+router.delete('/:id', requireRoles('HR_ADMIN', 'SUPER_ADMIN'), deleteEmployee);
 
 export default router;

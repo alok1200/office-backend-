@@ -5,7 +5,11 @@ import { buildDemoData } from './demoData.js';
 import { importRecords } from './importRecords.js';
 export async function migrateSchema() {
   const sql=await fs.readFile(new URL('./schema.sql',import.meta.url),'utf8');
-  await query(sql);
+  await transaction(async client => {
+    // Serialize startup/CLI migrations and commit DDL plus migration markers atomically.
+    await client.query('SELECT pg_advisory_xact_lock(784291)');
+    await client.query(sql);
+  });
 }
 export async function runMigrationsAndSeed() {
   await migrateSchema();

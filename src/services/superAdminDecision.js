@@ -1,13 +1,41 @@
 import { calculateRequest, dateKey, getAllowanceBalances, requestCategories } from './superAdminRequestPolicy.js';
-import { CORRECTION_WORKFLOW, attendanceFingerprint } from './attendanceCorrections.js';
+import { ALLOWED_TICKET_STATUSES, CORRECTION_WORKFLOW, attendanceFingerprint } from './attendanceCorrections.js';
 import { indiaDate } from './superAdminAttendanceReport.js';
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
 export function planDecision(request, payload, context, now = new Date()) {
   if (!request || request.status !== 'PENDING') fail('This request is no longer pending. Refresh the list.', 409);
   if (!['APPROVED', 'REJECTED'].includes(payload.status)) fail('Choose Approve or Reject.');
-  if (typeof payload.note !== 'string' || payload.note.trim().length < 5 || payload.note.trim().length > 1000) fail('Provide a review note of 5–1000 characters.');
-  const plan = { status: payload.status, note: payload.note.trim(), metadata: request.metadata || {}, attendance: null };
+  const hrTicket = request.metadata?.workflow === CORRECTION_WORKFLOW;
+  const requestedStatus = hrTicket && ALLOWED_TICKET_STATUSES.includes(request.metadata?.requested_status) ? request.metadata.requested_status : null;
+  const rawNote = typeof payload.note === 'string' ? payload.note.trim() : '';
+  if (requestedStatus) {
+    if (rawNote.length > 1000) fail('Review note must be at most 1000 characters.');
+  } else if (rawNote.length < 5 || rawNote.length > 1000) {
+    fail('Provide a review note of 5–1000 characters.');
+  }
+  const note = rawNote || (payload.status === 'APPROVED' ? 'Accepted by Super Admin' : 'Rejected by Super Admin');
+  const plan = { status: payload.status, note, metadata: request.metadata || {}, attendance: null, attendanceDates: [] };
   if (plan.status === 'REJECTED') return plan;
+  if (hrTicket && request.metadata.baseline !== attendanceFingerprint(context.attendance || null, context.breaks || [])) fail('Attendance changed since HR raised this ticket. Reject it and ask HR to raise a new correction.', 409);
+  if (requestedStatus) {
+    const existing = context.attendance || null;
+    const workDate = dateKey(request.start_date);
+    const defaultState = ['PRESENT', 'HALF_DAY'].includes(requestedStatus) ? 'CHECKED_OUT' : 'NOT_CHECKED_IN';
+    plan.attendance = {
+      employee_id: request.employee_id,
+      work_date: workDate,
+      check_in: existing?.check_in ?? null,
+      check_out: existing?.check_out ?? null,
+      current_state: existing?.current_state ?? defaultState,
+      status: requestedStatus,
+      total_work_minutes: existing?.total_work_minutes ?? 0,
+      total_break_minutes: existing?.total_break_minutes ?? 0,
+      notes: `Updated via HR ticket #${request.id} (${requestedStatus}): ${plan.note}`,
+      updated_at: now.toISOString()
+    };
+    plan.metadata = { ...plan.metadata, correction: { before: existing ? structuredClone(existing) : null, after: plan.attendance } };
+    return plan;
+  }
   let category = request.metadata?.category;
   if (request.request_type === 'LEAVE') {
     category ||= payload.category;
@@ -15,11 +43,27 @@ export function planDecision(request, payload, context, now = new Date()) {
   } else if (request.request_type === 'WFH') category = 'WFH';
   else if (request.request_type === 'REGULARIZATION') category = 'REGULARIZATION';
   else category = request.request_type === 'OTHER' && category === 'OFFICIAL' ? 'OFFICIAL' : null;
-  const hrTicket = request.metadata?.workflow === CORRECTION_WORKFLOW;
-  const calculation = hrTicket ? { days:1,year:Number(dateKey(request.start_date).slice(0,4)),category:'REGULARIZATION',label:'HR attendance correction' } : calculateRequest({ category: category || 'OFFICIAL', start_date: dateKey(request.start_date), end_date: dateKey(request.end_date), half_day: request.metadata?.half_day === true }, context.holidays);
+  const calculation = hrTicket
+    ? { days:1,year:Number(dateKey(request.start_date).slice(0,4)),category:'REGULARIZATION',label:'HR attendance correction' }
+    : request.request_type === 'HOLIDAY'
+      ? (() => {
+          const dates = [];
+          for (const d = new Date(`${dateKey(request.start_date)}T00:00:00Z`), e = new Date(`${dateKey(request.end_date)}T00:00:00Z`); d <= e; d.setUTCDate(d.getUTCDate() + 1)) dates.push(dateKey(d));
+          return { dates, days: dates.length, year: Number(dateKey(request.start_date).slice(0, 4)), label: 'Holiday' };
+        })()
+      : calculateRequest({ category: category || 'OFFICIAL', start_date: dateKey(request.start_date), end_date: dateKey(request.end_date), half_day: request.metadata?.half_day === true }, context.holidays);
   const balance = getAllowanceBalances(context.requests.filter(r => r.id !== request.id), calculation.year).find(b => b.category === category);
   if (balance && calculation.days > balance.remaining) fail(`Insufficient ${balance.label} balance: ${balance.remaining} day(s) available.`, 409);
-  plan.metadata = { ...plan.metadata, ...calculation, category, label: category ? requestCategories[category].label : request.request_type };
+  plan.metadata = { ...plan.metadata, ...calculation, category, label: category ? requestCategories[category].label : (request.request_type === 'HOLIDAY' ? 'Holiday' : request.request_type) };
+  if (['HOLIDAY', 'LEAVE'].includes(request.request_type) && Array.isArray(calculation.dates) && calculation.dates.length) {
+    plan.attendanceDates = calculation.dates.map(workDate => ({
+      employee_id: request.employee_id,
+      work_date: workDate,
+      status: request.request_type === 'HOLIDAY' ? 'HOLIDAY' : request.metadata?.half_day ? 'HALF_DAY' : 'LEAVE',
+      notes: `Approved ${request.request_type.toLowerCase()} request #${request.id}: ${plan.note}`,
+      updated_at: now.toISOString()
+    }));
+  }
   if (category !== 'REGULARIZATION') return plan;
   if (dateKey(request.start_date) !== dateKey(request.end_date)) fail('Regularization must cover one date. Reject this request and ask for separate daily requests.');
   const correction = payload.correction || (hrTicket ? request.metadata.proposed_correction : null);
@@ -28,8 +72,7 @@ export function planDecision(request, payload, context, now = new Date()) {
   const start = new Date(correction.check_in), end = new Date(correction.check_out);
   if (end <= start || end > now || indiaDate(start) !== dateKey(request.start_date) || indiaDate(end) !== dateKey(request.start_date)) fail('Correction times must be on the request date in IST, in order, and not in the future.');
   const existing = context.attendance;
-  if (hrTicket && request.metadata.baseline !== attendanceFingerprint(existing || null, context.breaks || [])) fail('Attendance changed since HR raised this ticket. Reject it and ask HR to raise a new correction.',409);
-  if (existing && ['CHECKED_IN', 'ON_BREAK'].includes(existing.current_state) && !(hrTicket && dateKey(request.start_date) < indiaDate(now))) fail('An active workday cannot be regularized. Complete the workday first.', 409);
+  if (existing && ['CHECKED_IN', 'ON_BREAK'].includes(existing.current_state) && !(dateKey(request.start_date) < indiaDate(now) && (hrTicket || existing.current_state === 'CHECKED_IN'))) fail('An active workday cannot be regularized. Complete the workday first.', 409);
   const breaks = context.breaks || [];
   if (breaks.some(b => !b.break_end || new Date(b.break_start) < start || new Date(b.break_end) > end || new Date(b.break_end) < new Date(b.break_start))) fail('Existing break intervals do not fit the correction. Review them before approving.', 409);
   const rest = breaks.reduce((total, b) => total + Math.floor((new Date(b.break_end) - new Date(b.break_start)) / 60000), 0);
