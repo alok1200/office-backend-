@@ -21,14 +21,28 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 8086;
+const isProd = process.env.NODE_ENV === 'production';
+
+// Production security headers & body limit
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+
+const corsOrigin = process.env.CORS_ORIGIN?.trim()
+  ? process.env.CORS_ORIGIN.split(',').map(o => o.trim()).filter(Boolean)
+  : '*';
 
 // Middlewares
 app.use(cors({
-  origin: '*',
+  origin: corsOrigin,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id']
 }));
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 
 // Health check
 app.get('/api/health', async (req,res) => {
@@ -66,9 +80,9 @@ app.use((err, req, res, next) => {
     return res.status(400).json({ success: false, error: 'Request body must contain valid JSON.' });
   }
   console.error('Unhandled Server Error:', err);
-  res.status(500).json({
+  res.status(err.status || 500).json({
     success: false,
-    error: err.message || 'Internal Server Error'
+    error: isProd && !err.status ? 'Internal Server Error' : (err.message || 'Internal Server Error')
   });
 });
 
@@ -92,6 +106,15 @@ async function start(port = Number(PORT)) {
       console.error('Server error:', err);
     }
   });
+
+  const shutdown = (signal) => {
+    console.log(`[Server] Received ${signal}. Shutting down gracefully...`);
+    server.close(() => {
+      pool.end().finally(() => process.exit(0));
+    });
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 start().catch(err => {
