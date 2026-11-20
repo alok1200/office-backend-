@@ -276,7 +276,7 @@ export async function getMyCalendar(req, res) {
     const holRes = await query(`SELECT * FROM holidays WHERE holiday_date >= $1 AND holiday_date <= $2`, [startPattern, endPattern]);
     holidays = holRes.rows;
 
-    const requests = (await query("SELECT * FROM requests WHERE employee_id=$1 AND status='APPROVED' AND start_date<=$3 AND end_date>=$2", [employeeId, startPattern, endPattern])).rows;
+    const requests = (await query("SELECT * FROM requests WHERE employee_id=$1 AND status IN ('APPROVED','REJECTED') AND start_date<=$3 AND end_date>=$2 ORDER BY decision_date DESC NULLS LAST, id DESC", [employeeId, startPattern, endPattern])).rows;
     // Build complete month day matrix
     const daysInMonth = [];
     for (let day = 1; day <= lastDay; day++) {
@@ -287,6 +287,7 @@ export async function getMyCalendar(req, res) {
       const existingAtt = attendances.find(a => a.work_date === dayStr);
       const holiday = holidays.find(h => h.holiday_date === dayStr);
       const planned=plannedRequestForDate(requests,employeeId,dayStr);
+      const rejected=requests.find(r => r.status === 'REJECTED' && String(r.start_date).slice(0, 10) <= dayStr && String(r.end_date).slice(0, 10) >= dayStr) || null;
       let status=resolveAttendanceStatus({attendance:existingAtt,holiday,planned,workDate:dayStr,today});
       if(req.user.role==='SUPER_ADMIN'&&req.query.employee_id===undefined&&!holiday&&status!=='WEEKLY_OFF')status='NOT_APPLICABLE';
       const statusDetails=existingAtt?.notes||holiday?.name||planned?.metadata?.label||null;
@@ -297,7 +298,12 @@ export async function getMyCalendar(req, res) {
         status,
         statusDetails,
         attendance: existingAtt || null,
-        holiday: holiday || null
+        holiday: holiday || null,
+        decision: planned
+          ? { id: planned.id, status: 'APPROVED', request_type: planned.request_type, remarks: planned.decision_remarks || null }
+          : rejected
+            ? { id: rejected.id, status: 'REJECTED', request_type: rejected.request_type, remarks: rejected.decision_remarks || null }
+            : null
       });
     }
     return res.json({

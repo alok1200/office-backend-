@@ -8,6 +8,7 @@ import {
   getCompanyAttendance,
   getCompanySummary
 } from '../controllers/attendanceController.js';
+import { exportMonthlyAttendance } from '../controllers/superAdminOperationsController.js';
 
 const router = express.Router();
 
@@ -19,9 +20,10 @@ router.get('/today', getTodayAttendance);
 router.post('/punch', blockSuperAdminPunch, recordPunch);
 router.get('/calendar', getMyCalendar);
 
-// HR Admin company-wide endpoints (view-only)
+// HR Admin company-wide endpoints (view-only + monthly report export)
 router.get('/company', requireRoles('HR_ADMIN', 'SUPER_ADMIN'), getCompanyAttendance);
 router.get('/summary', requireRoles('HR_ADMIN', 'SUPER_ADMIN'), getCompanySummary);
+router.get('/export', requireRoles('HR_ADMIN', 'SUPER_ADMIN'), exportMonthlyAttendance);
 
 // Explicitly reject modification attempts on company attendance
 router.all(['/company/edit', '/company/regularize', '/company/punch-behalf'], (req, res) => {

@@ -427,3 +427,66 @@ export async function deleteEmployee(req, res) {
     return respondError(res, error);
   } finally { client?.release(); }
 }
+
+/**
+ * PUT /api/employees/:id — HR Admin edits an existing Employee's profile & custom fields.
+ * Role, password, and active status are not modified here.
+ */
+export async function updateEmployee(req, res) {
+  let client;
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) fail('Invalid employee ID.');
+    const b = req.body || {};
+    const first_name = text(b.first_name, 100, 'First name', true);
+    const last_name = text(b.last_name, 100, 'Last name', true);
+    const email = text(b.email, 255, 'Email', true).toLowerCase();
+    if (!EMAIL_RE.test(email)) fail('Enter a valid email address.');
+    const department_name = text(b.department_name, 100, 'Department', true);
+    const designation = text(b.designation, 100, 'Designation', true);
+    const phone = text(b.phone, 50, 'Phone number');
+    if (phone && !/^[0-9+()\-\s]{6,50}$/.test(phone)) fail('Enter a valid phone number.');
+    const joining_date = dateValue(b.joining_date, 'Joining date', true);
+    const date_of_birth = dateValue(b.date_of_birth, 'Date of birth');
+    if (date_of_birth && date_of_birth >= joining_date) fail('Date of birth must be before the joining date.');
+    const address = text(b.address, 500, 'Address');
+    const emergency_contact_name = text(b.emergency_contact_name, 150, 'Emergency contact name');
+    const emergency_contact_phone = text(b.emergency_contact_phone, 50, 'Emergency contact phone');
+    const requestedCode = text(b.employee_id, 50, 'Employee ID');
+    if (requestedCode && !/^[A-Za-z0-9_-]+$/.test(requestedCode)) fail('Employee ID may only contain letters, numbers, hyphen and underscore.');
+    const custom_fields = validateCustomFields(b.custom_fields);
+
+    client = await pool.connect();
+    await client.query('BEGIN');
+    const before = (await client.query(`SELECT ${PUBLIC_COLUMNS} FROM employees WHERE id = $1 FOR UPDATE`, [id])).rows[0];
+    if (!before || !before.is_active) fail('Employee not found.', 404);
+    if (before.role !== 'EMPLOYEE') fail('HR Admin can only edit Employee accounts.', 403);
+
+    const employee_id = requestedCode || before.employee_id;
+    const dept = (await client.query('SELECT id, name FROM departments WHERE LOWER(name) = LOWER($1)', [department_name])).rows[0];
+    const updated = (await client.query(
+      `UPDATE employees
+       SET employee_id = $1, email = $2, first_name = $3, last_name = $4, department_id = $5, department_name = $6,
+           designation = $7, phone = $8, joining_date = $9, date_of_birth = $10, address = $11,
+           emergency_contact_name = $12, emergency_contact_phone = $13, custom_fields = $14, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $15
+       RETURNING ${PUBLIC_COLUMNS}`,
+      [employee_id, email, first_name, last_name, dept?.id || null, dept?.name || department_name,
+        designation, phone, joining_date, date_of_birth, address, emergency_contact_name, emergency_contact_phone,
+        JSON.stringify(custom_fields), id]
+    )).rows[0];
+    await client.query(
+      "INSERT INTO admin_audit_log (actor_id, action, entity_type, entity_id, before_data, after_data) VALUES ($1,'UPDATE_EMPLOYEE','employee',$2,$3,$4)",
+      [req.user.id, id, JSON.stringify(before), JSON.stringify(updated)]
+    );
+    await client.query('COMMIT');
+    return res.json({
+      success: true,
+      message: `${updated.first_name} ${updated.last_name} (${updated.employee_id}) was updated.`,
+      data: updated
+    });
+  } catch (error) {
+    if (client) await client.query('ROLLBACK').catch(() => {});
+    return respondError(res, error);
+  } finally { client?.release(); }
+}
