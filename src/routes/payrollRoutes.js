@@ -20,8 +20,6 @@ import {
   handlePaymentWebhook,
   getProviderSettings,
   updateProviderSettings,
-  listPayslips,
-  downloadPayslipPdf,
   exportPayrollReport,
 } from '../controllers/payrollController.js';
 
@@ -60,10 +58,6 @@ router.get('/payments/:id/transactions', requireRoles('SUPER_ADMIN'), getPayment
 router.post('/payments/:id/retry', requireRoles('SUPER_ADMIN'), retrySalaryPayment);
 router.get('/provider-settings', requireRoles('SUPER_ADMIN'), getProviderSettings);
 router.put('/provider-settings', requireRoles('SUPER_ADMIN'), updateProviderSettings);
-
-// Payslips (Employee sees/downloads own; HR/Super Admin see/download approved)
-router.get('/payslips', requireRoles('EMPLOYEE', 'HR_ADMIN', 'SUPER_ADMIN'), listPayslips);
-router.get('/payslips/:recordId/pdf', requireRoles('EMPLOYEE', 'HR_ADMIN', 'SUPER_ADMIN'), downloadPayslipPdf);
 
 // Payroll reports export (Super Admin + HR Admin)
 router.get('/reports/export', requireRoles('HR_ADMIN', 'SUPER_ADMIN'), exportPayrollReport);

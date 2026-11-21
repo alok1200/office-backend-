@@ -3,7 +3,6 @@ import { reportPeriod, indiaDate } from '../services/superAdminAttendanceReport.
 import { buildPayrollPreview, rupeesToPaise } from '../services/payrollCalculator.js';
 import { createPaymentAdapter, providerConfigStatus, validateBankDetails } from '../services/paymentProvider.js';
 import { enqueuePayrollPayments, reconcileWebhookEvent } from '../services/payrollPaymentWorker.js';
-import { generatePayslipPdf } from '../utils/payslipPdf.js';
 import { csvExport, xlsxExport } from '../utils/reportExport.js';
 
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
@@ -56,16 +55,19 @@ async function loadCalculationContext(period) {
 // ---------------------------------------------------------------------------
 export async function getPayrollDashboard(req, res) {
   try {
+    const today = indiaDate();
+    const year = Number(req.query.year || today.slice(0, 4));
+    const month = Number(req.query.month || today.slice(5, 7));
+    const period = reportPeriod({ year, month });
+
     if (req.user.role === 'EMPLOYEE') {
       const [salRes, latestRes, histRes] = await Promise.all([
         query('SELECT monthly_salary_paise, effective_from, updated_at FROM employee_salaries WHERE employee_id = $1', [req.user.id]),
         query(
-          `SELECT pr.*, pp.year, pp.month, pp.status AS period_status,
-                  sp.status AS payment_status, sp.provider_utr, sp.completed_at
+          `SELECT pr.*, pp.year, pp.month, pp.status AS period_status
            FROM payroll_records pr
            JOIN payroll_periods pp ON pp.id = pr.payroll_period_id
-           LEFT JOIN salary_payments sp ON sp.payroll_record_id = pr.id
-           WHERE pr.employee_id = $1 AND pp.status IN ('APPROVED','AUTHORIZED','PROCESSING','COMPLETED','PARTIALLY_PAID')
+           WHERE pr.employee_id = $1 AND pp.status <> 'REJECTED'
            ORDER BY pp.year DESC, pp.month DESC LIMIT 6`,
           [req.user.id]
         ),
@@ -76,67 +78,98 @@ export async function getPayrollDashboard(req, res) {
           [req.user.id]
         ),
       ]);
+
+      // Compute live current-month salary summary if not yet generated
+      let liveSummary = latestRes.rows[0] || null;
+      if (!liveSummary && salRes.rows[0]) {
+        const [attRes, holRes, reqRes] = await Promise.all([
+          query('SELECT * FROM attendances WHERE employee_id = $1 AND work_date >= $2 AND work_date <= $3', [req.user.id, period.first, period.last]),
+          query('SELECT * FROM holidays WHERE holiday_date >= $1 AND holiday_date <= $2', [period.first, period.last]),
+          query("SELECT * FROM requests WHERE employee_id = $1 AND status IN ('APPROVED','PENDING') AND start_date <= $3 AND end_date >= $2", [req.user.id, period.first, period.last]),
+        ]);
+        const preview = buildPayrollPreview(
+          {
+            employees: [req.user],
+            attendances: attRes.rows,
+            holidays: holRes.rows,
+            requests: reqRes.rows,
+            salaryHistory: histRes.rows,
+            currentSalaries: [{ employee_id: req.user.id, ...salRes.rows[0] }],
+            bankAccounts: [],
+          },
+          { year, month }
+        );
+        if (preview.records[0]) {
+          liveSummary = {
+            ...preview.records[0],
+            year,
+            month,
+            period_status: 'LIVE_PREVIEW',
+          };
+        }
+      }
+
       return res.json({
         success: true,
         data: {
           role: 'EMPLOYEE',
+          year,
+          month,
           current_salary: salRes.rows[0] || null,
+          latest_summary: liveSummary,
           latest_payslips: latestRes.rows,
           salary_history: histRes.rows,
         },
       });
     }
 
-    const today = indiaDate();
-    const year = Number(req.query.year || today.slice(0, 4));
-    const month = Number(req.query.month || today.slice(5, 7));
-
-    const [empCount, periodRow, periodsSummary, paymentStats, recentPeriods] = await Promise.all([
+    const [empCount, periodRow, recentPeriods] = await Promise.all([
       query("SELECT COUNT(*)::int AS total FROM employees WHERE is_active = true AND role <> 'SUPER_ADMIN'"),
       query('SELECT * FROM payroll_periods WHERE year = $1 AND month = $2', [year, month]),
       query(
-        `SELECT
-           COUNT(*) FILTER (WHERE status IN ('DRAFT','SUBMITTED'))::int AS pending_payroll,
-           COUNT(*) FILTER (WHERE status IN ('APPROVED','AUTHORIZED','PROCESSING','COMPLETED','PARTIALLY_PAID'))::int AS approved_payroll
-         FROM payroll_periods`
-      ),
-      query(
-        `SELECT
-           COUNT(*) FILTER (WHERE status = 'SUCCESS')::int AS successful_payments,
-           COUNT(*) FILTER (WHERE status = 'FAILED')::int AS failed_payments,
-           COUNT(*) FILTER (WHERE status = 'PENDING')::int AS pending_payments,
-           COUNT(*) FILTER (WHERE status = 'PROCESSING')::int AS processing_payments
-         FROM salary_payments`
-      ),
-      query(
-        `SELECT pp.*, p.first_name AS prepared_by_name, a.first_name AS approved_by_name
+        `SELECT pp.*, p.first_name AS prepared_by_name
          FROM payroll_periods pp
          LEFT JOIN employees p ON p.id = pp.prepared_by
-         LEFT JOIN employees a ON a.id = pp.approved_by
          ORDER BY pp.year DESC, pp.month DESC LIMIT 12`
       ),
     ]);
 
     const selected = periodRow.rows[0] || null;
+    let totals = null;
+    let isLivePreview = false;
+
+    if (selected) {
+      totals = {
+        total_employees: Number(selected.total_employees),
+        total_monthly_payroll_paise: Number(selected.total_monthly_salary_paise),
+        total_present_days: Number(selected.total_present_days),
+        total_absent_days: Number(selected.total_absent_days),
+        total_salary_deductions_paise: Number(selected.total_deduction_paise),
+        total_payable_salary_paise: Number(selected.total_payable_paise),
+      };
+    } else {
+      const ctx = await loadCalculationContext(period);
+      const preview = buildPayrollPreview(ctx, { year, month });
+      isLivePreview = true;
+      totals = {
+        total_employees: preview.totals.total_employees || empCount.rows[0].total,
+        total_monthly_payroll_paise: preview.totals.total_monthly_salary_paise,
+        total_present_days: preview.totals.total_present_days,
+        total_absent_days: preview.totals.total_absent_days,
+        total_salary_deductions_paise: preview.totals.total_deduction_paise,
+        total_payable_salary_paise: preview.totals.total_payable_paise,
+      };
+    }
+
     return res.json({
       success: true,
       data: {
         role: req.user.role,
         year,
         month,
-        total_employees: selected ? Number(selected.total_employees) : empCount.rows[0].total,
-        total_monthly_payroll_paise: selected ? Number(selected.total_monthly_salary_paise) : 0,
-        total_present_days: selected ? Number(selected.total_present_days) : 0,
-        total_absent_days: selected ? Number(selected.total_absent_days) : 0,
-        total_salary_deductions_paise: selected ? Number(selected.total_deduction_paise) : 0,
-        total_payable_salary_paise: selected ? Number(selected.total_payable_paise) : 0,
+        is_live_preview: isLivePreview,
+        ...totals,
         selected_period: selected,
-        pending_payroll: periodsSummary.rows[0].pending_payroll,
-        approved_payroll: periodsSummary.rows[0].approved_payroll,
-        successful_payments: paymentStats.rows[0].successful_payments,
-        failed_payments: paymentStats.rows[0].failed_payments,
-        pending_payments: paymentStats.rows[0].pending_payments,
-        processing_payments: paymentStats.rows[0].processing_payments,
         recent_periods: recentPeriods.rows,
       },
     });
@@ -796,73 +829,8 @@ export async function updateProviderSettings(req, res) {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Payslips & Payroll Reports
+// 6. Payroll Reports
 // ---------------------------------------------------------------------------
-export async function listPayslips(req, res) {
-  try {
-    const params = [];
-    let where = "WHERE pp.status IN ('APPROVED','AUTHORIZED','PROCESSING','COMPLETED','PARTIALLY_PAID')";
-    if (req.user.role === 'EMPLOYEE') {
-      params.push(req.user.id);
-      where += ` AND pr.employee_id = $${params.length}`;
-    } else if (req.query.employee_id) {
-      params.push(safeId(req.query.employee_id, 'employee ID'));
-      where += ` AND pr.employee_id = $${params.length}`;
-    }
-    if (req.query.year) {
-      params.push(Number(req.query.year));
-      where += ` AND pp.year = $${params.length}`;
-    }
-    if (req.query.month) {
-      params.push(Number(req.query.month));
-      where += ` AND pp.month = $${params.length}`;
-    }
-    const rows = (await query(
-      `SELECT pr.*, pp.year, pp.month, pp.status AS period_status,
-              ba.bank_name, ba.account_number_masked,
-              sp.status AS payment_status, sp.provider, sp.provider_payout_id, sp.provider_utr, sp.completed_at
-       FROM payroll_records pr
-       JOIN payroll_periods pp ON pp.id = pr.payroll_period_id
-       LEFT JOIN employee_bank_accounts ba ON ba.employee_id = pr.employee_id
-       LEFT JOIN salary_payments sp ON sp.payroll_record_id = pr.id
-       ${where}
-       ORDER BY pp.year DESC, pp.month DESC, pr.employee_name`,
-      params
-    )).rows;
-    return res.json({ success: true, data: rows });
-  } catch (err) { return respondError(res, err); }
-}
-
-export async function downloadPayslipPdf(req, res) {
-  try {
-    const recordId = safeId(req.params.recordId, 'payslip ID');
-    const row = (await query(
-      `SELECT pr.*, pp.year, pp.month, pp.status AS period_status,
-              ba.bank_name, ba.account_number_masked,
-              sp.status AS payment_status, sp.provider_payout_id, sp.provider_utr
-       FROM payroll_records pr
-       JOIN payroll_periods pp ON pp.id = pr.payroll_period_id
-       LEFT JOIN employee_bank_accounts ba ON ba.employee_id = pr.employee_id
-       LEFT JOIN salary_payments sp ON sp.payroll_record_id = pr.id
-       WHERE pr.id = $1`,
-      [recordId]
-    )).rows[0];
-    if (!row) fail('Payslip not found.', 404);
-    if (!['APPROVED', 'AUTHORIZED', 'PROCESSING', 'COMPLETED', 'PARTIALLY_PAID'].includes(row.period_status)) {
-      fail('Payslip is only available after Super Admin approval.', 403);
-    }
-    if (req.user.role === 'EMPLOYEE' && row.employee_id !== req.user.id) {
-      fail('Forbidden: You can only download your own payslips.', 403);
-    }
-
-    const pdfBuffer = generatePayslipPdf(row);
-    const filename = `payslip-${row.employee_code}-${row.year}-${String(row.month).padStart(2, '0')}.pdf`;
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    return res.send(pdfBuffer);
-  } catch (err) { return respondError(res, err); }
-}
-
 export async function exportPayrollReport(req, res) {
   try {
     const period = reportPeriod({ year: req.query.year, month: req.query.month });
