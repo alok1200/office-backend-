@@ -77,9 +77,12 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    // 5. Success: reset rate limiter, create session token
+    // 5. Success: reset rate limiter, issue signed JWT token
     resetRateLimit(rateLimitKey);
-    const sessionToken = createSession(user.id);
+    const sessionToken = createSession(user.id, {
+      role: user.role,
+      employee_id: user.employee_id,
+    });
 
     // Return safe user representation (no passwords or salts)
     const safeUser = {

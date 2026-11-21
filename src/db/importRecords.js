@@ -1,4 +1,9 @@
-export const tables = ['departments','employees','office_locations','holidays','attendances','attendance_breaks','requests','notifications','application_audit_log','admin_audit_log','notification_reads','company_assets'];
+export const tables = [
+  'departments','employees','office_locations','holidays','attendances','attendance_breaks',
+  'requests','notifications','application_audit_log','admin_audit_log','notification_reads','company_assets',
+  'employee_salaries','employee_salary_history','payroll_periods','payroll_records','payroll_approvals',
+  'employee_bank_accounts','salary_payments','payment_transactions','payment_webhook_logs','payroll_audit_logs','payment_provider_settings'
+];
 const identifier = value => `"${value.replaceAll('"','""')}"`;
 export async function importRecords(client, data) {
   const columns = (await client.query('SELECT table_name,column_name,data_type FROM information_schema.columns WHERE table_schema=current_schema()')).rows;

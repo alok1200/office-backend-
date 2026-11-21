@@ -212,3 +212,183 @@ BEGIN
     END IF;
   END LOOP;
 END $$;
+
+
+-- ============================================================================
+-- KNOOVIQ Monthly Salary Management & Payroll Module (integer paise storage)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS employee_salaries (
+  id SERIAL PRIMARY KEY,
+  employee_id INTEGER NOT NULL UNIQUE REFERENCES employees(id) ON DELETE CASCADE,
+  monthly_salary_paise BIGINT NOT NULL CHECK (monthly_salary_paise > 0),
+  effective_from DATE NOT NULL,
+  updated_by INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS employee_salary_history (
+  id SERIAL PRIMARY KEY,
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  previous_salary_paise BIGINT CHECK (previous_salary_paise IS NULL OR previous_salary_paise > 0),
+  updated_salary_paise BIGINT NOT NULL CHECK (updated_salary_paise > 0),
+  effective_from DATE NOT NULL,
+  updated_by INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  update_reason TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_salary_history_emp_eff ON employee_salary_history(employee_id, effective_from DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS payroll_periods (
+  id SERIAL PRIMARY KEY,
+  year INTEGER NOT NULL CHECK (year BETWEEN 2000 AND 2100),
+  month INTEGER NOT NULL CHECK (month BETWEEN 1 AND 12),
+  status VARCHAR(30) NOT NULL DEFAULT 'DRAFT',
+  prepared_by INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  submitted_by INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  submitted_at TIMESTAMPTZ,
+  approved_by INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  approved_at TIMESTAMPTZ,
+  rejected_by INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  rejected_at TIMESTAMPTZ,
+  rejection_reason TEXT,
+  authorized_by INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  authorized_at TIMESTAMPTZ,
+  total_employees INTEGER NOT NULL DEFAULT 0,
+  total_monthly_salary_paise BIGINT NOT NULL DEFAULT 0,
+  total_present_days NUMERIC(10,2) NOT NULL DEFAULT 0,
+  total_absent_days NUMERIC(10,2) NOT NULL DEFAULT 0,
+  total_deduction_paise BIGINT NOT NULL DEFAULT 0,
+  total_payable_paise BIGINT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT unique_payroll_period_ym UNIQUE (year, month)
+);
+
+CREATE TABLE IF NOT EXISTS payroll_records (
+  id SERIAL PRIMARY KEY,
+  payroll_period_id INTEGER NOT NULL REFERENCES payroll_periods(id) ON DELETE CASCADE,
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,
+  employee_name VARCHAR(200) NOT NULL,
+  employee_code VARCHAR(50) NOT NULL,
+  department_name VARCHAR(100) NOT NULL DEFAULT '',
+  designation VARCHAR(100) NOT NULL DEFAULT '',
+  monthly_salary_paise BIGINT NOT NULL CHECK (monthly_salary_paise > 0),
+  working_days INTEGER NOT NULL DEFAULT 30 CHECK (working_days = 30),
+  present_days NUMERIC(5,2) NOT NULL CHECK (present_days >= 0 AND present_days <= 30),
+  absent_days NUMERIC(5,2) NOT NULL CHECK (absent_days >= 0 AND absent_days <= 30),
+  daily_salary_paise BIGINT NOT NULL CHECK (daily_salary_paise >= 0),
+  absent_deduction_paise BIGINT NOT NULL CHECK (absent_deduction_paise >= 0),
+  final_payable_paise BIGINT NOT NULL CHECK (final_payable_paise >= 0),
+  salary_effective_from DATE,
+  attendance_summary JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT unique_payroll_record_emp_period UNIQUE (payroll_period_id, employee_id),
+  CONSTRAINT payroll_record_days_sum CHECK (present_days + absent_days = 30)
+);
+CREATE INDEX IF NOT EXISTS idx_payroll_records_period ON payroll_records(payroll_period_id);
+CREATE INDEX IF NOT EXISTS idx_payroll_records_employee ON payroll_records(employee_id);
+
+CREATE TABLE IF NOT EXISTS payroll_approvals (
+  id SERIAL PRIMARY KEY,
+  payroll_period_id INTEGER NOT NULL REFERENCES payroll_periods(id) ON DELETE CASCADE,
+  actor_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  action VARCHAR(30) NOT NULL,
+  remarks TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_payroll_approvals_period ON payroll_approvals(payroll_period_id);
+
+CREATE TABLE IF NOT EXISTS employee_bank_accounts (
+  id SERIAL PRIMARY KEY,
+  employee_id INTEGER NOT NULL UNIQUE REFERENCES employees(id) ON DELETE CASCADE,
+  account_holder_name VARCHAR(150) NOT NULL,
+  bank_name VARCHAR(150) NOT NULL,
+  account_number_encrypted TEXT NOT NULL,
+  account_number_masked VARCHAR(30) NOT NULL,
+  ifsc_code VARCHAR(20) NOT NULL,
+  account_type VARCHAR(30) NOT NULL DEFAULT 'SAVINGS',
+  is_verified BOOLEAN NOT NULL DEFAULT TRUE,
+  updated_by INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS salary_payments (
+  id SERIAL PRIMARY KEY,
+  payroll_period_id INTEGER NOT NULL REFERENCES payroll_periods(id) ON DELETE RESTRICT,
+  payroll_record_id INTEGER NOT NULL UNIQUE REFERENCES payroll_records(id) ON DELETE RESTRICT,
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE RESTRICT,
+  bank_account_id INTEGER REFERENCES employee_bank_accounts(id) ON DELETE SET NULL,
+  amount_paise BIGINT NOT NULL CHECK (amount_paise >= 0),
+  idempotency_key VARCHAR(120) NOT NULL UNIQUE,
+  provider VARCHAR(30) NOT NULL,
+  provider_payout_id VARCHAR(120),
+  provider_utr VARCHAR(120),
+  status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+  failure_reason TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  authorized_by INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  authorized_at TIMESTAMPTZ,
+  initiated_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_salary_payments_period ON salary_payments(payroll_period_id);
+CREATE INDEX IF NOT EXISTS idx_salary_payments_status ON salary_payments(status);
+CREATE INDEX IF NOT EXISTS idx_salary_payments_provider_payout ON salary_payments(provider_payout_id) WHERE provider_payout_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS payment_transactions (
+  id SERIAL PRIMARY KEY,
+  salary_payment_id INTEGER NOT NULL REFERENCES salary_payments(id) ON DELETE CASCADE,
+  provider VARCHAR(30) NOT NULL,
+  idempotency_key VARCHAR(120) NOT NULL,
+  request_type VARCHAR(30) NOT NULL,
+  provider_reference_id VARCHAR(120),
+  status VARCHAR(30) NOT NULL,
+  http_status INTEGER,
+  response_payload JSONB,
+  error_message TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_payment_tx_payment ON payment_transactions(salary_payment_id);
+
+CREATE TABLE IF NOT EXISTS payment_webhook_logs (
+  id SERIAL PRIMARY KEY,
+  provider VARCHAR(30) NOT NULL,
+  event_id VARCHAR(150),
+  event_type VARCHAR(100),
+  signature_valid BOOLEAN NOT NULL DEFAULT FALSE,
+  payload JSONB NOT NULL,
+  processed BOOLEAN NOT NULL DEFAULT FALSE,
+  processing_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_webhook_provider_event ON payment_webhook_logs(provider, event_id) WHERE event_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS payroll_audit_logs (
+  id SERIAL PRIMARY KEY,
+  actor_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  action VARCHAR(60) NOT NULL,
+  entity_type VARCHAR(50) NOT NULL,
+  entity_id INTEGER NOT NULL,
+  before_data JSONB,
+  after_data JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_payroll_audit_entity ON payroll_audit_logs(entity_type, entity_id);
+
+CREATE TABLE IF NOT EXISTS payment_provider_settings (
+  provider VARCHAR(30) PRIMARY KEY,
+  is_active BOOLEAN NOT NULL DEFAULT FALSE,
+  mode VARCHAR(20) NOT NULL DEFAULT 'TEST',
+  account_identifier VARCHAR(120),
+  webhook_url TEXT,
+  updated_by INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT INTO payment_provider_settings (provider, is_active, mode)
+  VALUES ('RAZORPAYX', TRUE, 'TEST'), ('CASHFREE', FALSE, 'TEST')
+  ON CONFLICT (provider) DO NOTHING;

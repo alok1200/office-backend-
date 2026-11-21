@@ -2,29 +2,26 @@ import { query } from '../db/index.js';
 import { getSession } from '../utils/security.js';
 
 /**
- * Authentication Middleware: Extracts identity only from a validated session token
+ * Authentication Middleware: Verifies signed JWT Bearer token and loads active user
  */
 export async function authenticateUser(req, res, next) {
   try {
-    let userId = null;
+    let session = null;
 
-    // 1. Check Bearer Token
+    // 1. Check Bearer JWT Token
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.split(' ')[1];
-      const session = getSession(token);
-      if (session) {
-        userId = session.userId;
-      }
+      const token = authHeader.slice(7).trim();
+      session = getSession(token);
     }
-    if (!userId) {
+    if (!session?.userId) {
       return res.status(401).json({
         success: false,
-        error: 'Unauthorized: Session missing or expired. Please sign in.'
+        error: 'Unauthorized: Invalid or expired JWT token. Please sign in.'
       });
     }
     let user = null;
-    const result = await query('SELECT * FROM employees WHERE id = $1 AND is_active = true', [userId]);
+    const result = await query('SELECT * FROM employees WHERE id = $1 AND is_active = true', [session.userId]);
     if (result.rows.length > 0) {
       user = result.rows[0];
     }
@@ -34,6 +31,7 @@ export async function authenticateUser(req, res, next) {
         error: 'Unauthorized: User not found or inactive.'
       });
     }
+    req.auth = session;
     req.user = user;
     next();
   } catch (err) {
