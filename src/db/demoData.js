@@ -1,4 +1,5 @@
 import { hashPassword } from '../utils/security.js';
+import { ATTENDANCE_RADIUS_M } from '../services/punchGeofence.js';
 export function buildDemoData() {
 // Seed Data Objects
 const departmentsData = [{
@@ -395,7 +396,7 @@ const officeLocationData = [{
   name: 'KNOOVIQ HQ, Bengaluru',
   latitude: 12.971598,
   longitude: 77.594566,
-  radius_m: 50,
+  radius_m: ATTENDANCE_RADIUS_M,
   max_accuracy_m: 50,
   address: 'KNOOVIQ Tech Tower, Outer Ring Rd, Bengaluru, Karnataka 560103',
   is_active: true,

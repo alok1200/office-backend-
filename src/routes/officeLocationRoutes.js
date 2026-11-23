@@ -2,6 +2,7 @@ import express from 'express';
 import { authenticateUser, requireRoles } from '../middleware/auth.js';
 import { query } from '../db/index.js';
 import { configuredOffice } from '../services/officeConfiguration.js';
+import { ATTENDANCE_RADIUS_M } from '../services/punchGeofence.js';
 import { saveOffice } from '../controllers/superAdminOfficesController.js';
 const router = express.Router();
 router.use(authenticateUser);
@@ -34,7 +35,7 @@ router.put('/', requireRoles('SUPER_ADMIN'), async (req, res, next) => {
     req.params.id = current?.id ? String(current.id) : undefined;
     req.body = {
       name: 'KNOOVIQ HQ',
-      radius_m: 50,
+      radius_m: ATTENDANCE_RADIUS_M,
       max_accuracy_m: 50,
       timezone: 'Asia/Kolkata',
       office_ips: [],

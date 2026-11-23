@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS office_locations (
   name VARCHAR(150) NOT NULL DEFAULT 'KNOOVIQ HQ, Bengaluru',
   latitude DECIMAL(9,6) NOT NULL DEFAULT 12.971598,
   longitude DECIMAL(9,6) NOT NULL DEFAULT 77.594566,
-  radius_m INTEGER NOT NULL DEFAULT 50,
+  radius_m INTEGER NOT NULL DEFAULT 100,
   max_accuracy_m INTEGER NOT NULL DEFAULT 50,
   address TEXT DEFAULT 'KNOOVIQ Tech Tower, Outer Ring Rd, Bengaluru, Karnataka 560103',
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -119,6 +119,7 @@ CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(recipien
 CREATE INDEX IF NOT EXISTS idx_audit_app ON application_audit_log(application_id);
 
 -- Multi-office administration; additive migration for existing installations.
+ALTER TABLE office_locations ALTER COLUMN radius_m SET DEFAULT 100;
 ALTER TABLE office_locations ADD COLUMN IF NOT EXISTS timezone VARCHAR(100) NOT NULL DEFAULT 'Asia/Kolkata';
 ALTER TABLE office_locations ADD COLUMN IF NOT EXISTS office_ips JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE office_locations ADD COLUMN IF NOT EXISTS is_primary BOOLEAN NOT NULL DEFAULT FALSE;

@@ -13,7 +13,7 @@ router.post('/hr-admins', createHRAdmin);
 // This installation has one organization. Only return configured office data.
 router.get('/dashboard', async (req, res, next) => {
   try {
-    const office = await configuredOffice(req.user);
+    const office = await configuredOffice(req.query.office === 'primary' ? {} : req.user);
     const connectionIP = peerAddress(req);
     res.json({
       success: true,

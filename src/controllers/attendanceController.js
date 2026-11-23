@@ -120,7 +120,7 @@ export async function recordPunch(req, res) {
         error: 'INVALID_ACTION',
         message: 'Choose a valid attendance action.'
       });
-      { // Every attendance action requires current GPS inside the fixed 50 m boundary.
+      { // Every attendance action requires current GPS inside the office boundary.
         try {
           verifyPunchGeofence(await configuredOffice(employee), req.body);
         } catch (error) {
