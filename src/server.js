@@ -78,9 +78,14 @@ import { fileURLToPath } from 'node:url';
 const frontendDist = fileURLToPath(new URL('../../frontend/dist/',import.meta.url));
 app.use(express.static(frontendDist));
 app.use(['/assets', '/branding'], (req, res) => res.status(404).end());
-// For SPA routes, fallback to index.html
-app.get('*', (req, res) => {
-  res.sendFile(path.join(frontendDist, 'index.html'));
+// Serve SPA routes when a frontend build is available.
+app.get('*', (req, res, next) => {
+  res.sendFile(path.join(frontendDist, 'index.html'), error => {
+    if (!error) return;
+    if (res.headersSent || error.code !== 'ENOENT') return next(error);
+    if (req.path === '/') return res.redirect('/api/health');
+    res.status(404).end();
+  });
 });
 
 // Global Error Handler
