@@ -1,6 +1,6 @@
 import { pool, query, transaction } from '../db/index.js';
 import { matchOfficeIP, peerAddress, validateOffice, validateOfficeCoordinates } from '../services/officeNetworks.js';
-import { ATTENDANCE_RADIUS_M } from '../services/punchGeofence.js';
+import { ATTENDANCE_RADIUS_M, attendanceAccuracyLimit } from '../services/punchGeofence.js';
 const fail = (message, status = 400) => {
   throw Object.assign(new Error(message), {
     status
@@ -45,7 +45,7 @@ export async function listOffices(req, res) {
       return {
         ...o,
         radius_m: ATTENDANCE_RADIUS_M,
-        max_accuracy_m: Math.min(Number(o.max_accuracy_m ?? 75), 75),
+        max_accuracy_m: attendanceAccuracyLimit(o.max_accuracy_m),
         timezone: o.timezone || 'Asia/Kolkata',
         office_ips: o.office_ips || [],
         is_primary: o.id === primary?.id,
@@ -95,7 +95,7 @@ export async function updatePrimaryOfficeCoordinates(req, res) {
     });
     res.json({
       success: true,
-      data: { ...saved, radius_m: ATTENDANCE_RADIUS_M, max_accuracy_m: Math.min(Number(saved.max_accuracy_m ?? 75), 75) },
+      data: { ...saved, radius_m: ATTENDANCE_RADIUS_M, max_accuracy_m: attendanceAccuracyLimit(saved.max_accuracy_m) },
       message: 'Primary office location updated.'
     });
   } catch (error) {
@@ -108,7 +108,7 @@ export async function saveOffice(req, res) {
     const id = req.params.id ? officeId(req.params.id) : null;
     const data = validateOffice(req.body);
     data.radius_m = ATTENDANCE_RADIUS_M;
-    data.max_accuracy_m = Math.min(data.max_accuracy_m, 75);
+    data.max_accuracy_m = attendanceAccuracyLimit(data.max_accuracy_m);
     const now = new Date().toISOString();
     let saved;
     client = await pool.connect();

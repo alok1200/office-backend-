@@ -158,6 +158,14 @@ INSERT INTO admin_audit_log (actor_id, action, entity_type, entity_id, before_da
   SELECT NULL, 'MIGRATE_ACCURACY_75', 'office_location', 0, '{"max_accuracy_m":50}', '{"max_accuracy_m":75}'
   WHERE NOT EXISTS (SELECT 1 FROM admin_audit_log WHERE action = 'MIGRATE_ACCURACY_75');
 
+-- Preserve the old effective limit on existing offices. Higher limits require an admin save.
+UPDATE office_locations SET max_accuracy_m = 75
+  WHERE max_accuracy_m > 75
+  AND NOT EXISTS (SELECT 1 FROM admin_audit_log WHERE action = 'MIGRATE_ACCURACY_OPT_IN');
+INSERT INTO admin_audit_log (actor_id, action, entity_type, entity_id, after_data)
+  SELECT NULL, 'MIGRATE_ACCURACY_OPT_IN', 'office_location', 0, '{"existing_max_accuracy_m":75}'
+  WHERE NOT EXISTS (SELECT 1 FROM admin_audit_log WHERE action = 'MIGRATE_ACCURACY_OPT_IN');
+
 -- HR onboarding: extended employee record and company assets issued to employees.
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS date_of_birth DATE;
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS address TEXT;
