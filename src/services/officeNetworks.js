@@ -63,19 +63,22 @@ export function peerAddress(req) {
   // Forwarding headers are deliberately not trusted by this direct-server setup.
   try { return normalizeNetwork(req.socket.remoteAddress).text; } catch { return null; }
 }
+function number(value, label, min, max, integer = false) {
+  if (value === null || value === undefined || value === '' || (typeof value === 'string' && !value.trim()) || !['string', 'number'].includes(typeof value)) fail(`${label} is required.`);
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < min || numeric > max || (integer && !Number.isInteger(numeric))) fail(`${label} must be ${integer ? 'an integer' : 'a number'} between ${min} and ${max}.`);
+  return numeric;
+}
+export function validateOfficeCoordinates(body) {
+  return { latitude: number(body.latitude, 'Latitude', -90, 90), longitude: number(body.longitude, 'Longitude', -180, 180) };
+}
 export function validateOffice(body) {
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   if (!name || name.length > 150) fail('Office name must contain 1–150 characters.');
-  const number = (value, label, min, max, integer = false) => {
-    if (value === null || value === undefined || value === '' || (typeof value === 'string' && !value.trim()) || !['string', 'number'].includes(typeof value)) fail(`${label} is required.`);
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric) || numeric < min || numeric > max || (integer && !Number.isInteger(numeric))) fail(`${label} must be ${integer ? 'an integer' : 'a number'} between ${min} and ${max}.`);
-    return numeric;
-  };
   const timezone = typeof body.timezone === 'string' ? body.timezone.trim() : 'Asia/Kolkata';
   try { new Intl.DateTimeFormat('en', { timeZone: timezone }); } catch { fail('Choose a valid timezone, such as Asia/Kolkata.'); }
   if (typeof body.is_primary !== 'boolean') fail('Primary office must be true or false.');
   if (!Array.isArray(body.user_ids) || body.user_ids.length > 10000 || body.user_ids.some(id => !Number.isSafeInteger(id) || id <= 0)) fail('Choose valid users.');
   if (body.address !== undefined && (typeof body.address !== 'string' || body.address.length > 500)) fail('Address must be at most 500 characters.');
-  return { name, latitude: number(body.latitude, 'Latitude', -90, 90), longitude: number(body.longitude, 'Longitude', -180, 180), radius_m: number(body.radius_m, 'Radius', 1, 100000, true), max_accuracy_m: number(body.max_accuracy_m, 'Maximum GPS accuracy', 1, 10000, true), timezone, office_ips: normalizeOfficeIPs(body.office_ips || []), is_primary: body.is_primary, user_ids: [...new Set(body.user_ids)], address: body.address?.trim() || '' };
+  return { name, ...validateOfficeCoordinates(body), radius_m: number(body.radius_m, 'Radius', 1, 100000, true), max_accuracy_m: number(body.max_accuracy_m, 'Maximum GPS accuracy', 1, 10000, true), timezone, office_ips: normalizeOfficeIPs(body.office_ips || []), is_primary: body.is_primary, user_ids: [...new Set(body.user_ids)], address: body.address?.trim() || '' };
 }

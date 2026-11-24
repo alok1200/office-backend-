@@ -3,7 +3,7 @@ import { authenticateUser, requireRoles } from '../middleware/auth.js';
 import { query } from '../db/index.js';
 import { configuredOffice } from '../services/officeConfiguration.js';
 import { ATTENDANCE_RADIUS_M } from '../services/punchGeofence.js';
-import { saveOffice } from '../controllers/superAdminOfficesController.js';
+import { saveOffice, updatePrimaryOfficeCoordinates } from '../controllers/superAdminOfficesController.js';
 const router = express.Router();
 router.use(authenticateUser);
 // Preserve the existing read API, now resolved to the account's assigned/default office.
@@ -29,6 +29,7 @@ router.get('/', async (req, res, next) => {
 });
 // Keep legacy GPS updates compatible, targeting just the primary office and auditing them.
 router.put('/', requireRoles('SUPER_ADMIN'), async (req, res, next) => {
+  if (req.body?.office_id !== undefined) return updatePrimaryOfficeCoordinates(req, res);
   try {
     const current = await configuredOffice({});
     const users = current ? (await query('SELECT id FROM employees WHERE office_id = $1 AND is_active = true', [current.id])).rows : [];

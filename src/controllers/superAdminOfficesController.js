@@ -1,5 +1,5 @@
-import { pool, query } from '../db/index.js';
-import { matchOfficeIP, peerAddress, validateOffice } from '../services/officeNetworks.js';
+import { pool, query, transaction } from '../db/index.js';
+import { matchOfficeIP, peerAddress, validateOffice, validateOfficeCoordinates } from '../services/officeNetworks.js';
 import { ATTENDANCE_RADIUS_M } from '../services/punchGeofence.js';
 const fail = (message, status = 400) => {
   throw Object.assign(new Error(message), {
@@ -73,6 +73,34 @@ function validateAssignment(data, users, before, offices) {
   if (data.user_ids.some(id => !users.some(u => u.id === id))) fail('One or more selected users are inactive or no longer exist.');
   if (before?.is_primary && !data.is_primary) fail('Choose a different primary office first.');
   if (!before && !offices.length) data.is_primary = true;
+}
+export async function updatePrimaryOfficeCoordinates(req, res) {
+  try {
+    const id = officeId(req.body.office_id);
+    const { latitude, longitude } = validateOfficeCoordinates(req.body);
+    const saved = await transaction(async client => {
+      await client.query('SELECT pg_advisory_xact_lock(784291)');
+      const { rows: [before] } = await client.query('SELECT * FROM office_locations WHERE is_active = true ORDER BY is_primary DESC, id DESC LIMIT 1');
+      if (before?.id !== id) fail('The primary office changed. Reload the office settings and try again.', 409);
+
+      const { rows: [office] } = await client.query(
+        'UPDATE office_locations SET latitude=$1, longitude=$2, updated_by=$3, updated_at=now() WHERE id=$4 RETURNING *',
+        [latitude, longitude, req.user.id, id]
+      );
+      await client.query(
+        "INSERT INTO admin_audit_log (actor_id, action, entity_type, entity_id, before_data, after_data) VALUES ($1,'UPDATE_OFFICE','office',$2,$3,$4)",
+        [req.user.id, id, JSON.stringify(before), JSON.stringify(office)]
+      );
+      return office;
+    });
+    res.json({
+      success: true,
+      data: { ...saved, radius_m: ATTENDANCE_RADIUS_M, max_accuracy_m: Math.min(Number(saved.max_accuracy_m ?? 75), 75) },
+      message: 'Primary office location updated.'
+    });
+  } catch (error) {
+    respondError(res, error);
+  }
 }
 export async function saveOffice(req, res) {
   let client;
