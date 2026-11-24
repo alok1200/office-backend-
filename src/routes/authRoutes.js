@@ -1,7 +1,8 @@
 import express from 'express';
 import { authenticateUser } from '../middleware/auth.js';
 import { query } from '../db/index.js';
-import { verifyPassword, checkRateLimit, recordFailedAttempt, resetRateLimit, createSession, revokeSession } from '../utils/security.js';
+import { peerAddress } from '../services/officeNetworks.js';
+import { verifyPassword, checkRateLimit, recordFailedAttempt, resetRateLimit, createSession, revokeSession, dummyPasswordVerify } from '../utils/security.js';
 const router = express.Router();
 
 /**
@@ -29,8 +30,8 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    // 2. Rate limiting check (using client IP + normalized identifier)
-    const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+    // 2. Rate limiting check using direct socket peer IP (never spoofable X-Forwarded-For)
+    const clientIp = peerAddress(req) || '127.0.0.1';
     const rateLimitKey = `${clientIp}:${identifier.toLowerCase()}`;
     const rateCheck = checkRateLimit(rateLimitKey);
     if (!rateCheck.allowed) {
@@ -50,8 +51,9 @@ router.post('/login', async (req, res) => {
     }
 
     // 4. Verify user exists and check password
-    // If not found, run dummy verify to prevent timing attacks
+    // Always run dummy PBKDF2 verify when user is not found to prevent timing-based account enumeration
     if (!user) {
+      dummyPasswordVerify(password);
       recordFailedAttempt(rateLimitKey);
       return res.status(401).json({
         success: false,

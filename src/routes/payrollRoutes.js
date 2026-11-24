@@ -31,16 +31,16 @@ router.post('/webhooks/:provider', handlePaymentWebhook);
 // All remaining payroll endpoints require authenticated session
 router.use(authenticateUser);
 
-// Dashboard (role-scoped inside controller)
-router.get('/dashboard', requireRoles('EMPLOYEE', 'HR_ADMIN', 'SUPER_ADMIN'), getPayrollDashboard);
+// Dashboard & salary history (HR Admin + Super Admin only)
+router.get('/dashboard', requireRoles('HR_ADMIN', 'SUPER_ADMIN'), getPayrollDashboard);
 
 // Employee salary & bank management (HR Admin + Super Admin)
 router.get('/salaries', requireRoles('HR_ADMIN', 'SUPER_ADMIN'), listEmployeeSalaries);
 router.put('/salaries/:employeeId', requireRoles('HR_ADMIN', 'SUPER_ADMIN'), upsertEmployeeSalary);
 router.put('/bank-accounts/:employeeId', requireRoles('HR_ADMIN', 'SUPER_ADMIN'), upsertBankAccount);
 
-// Salary history (Employee sees own; HR/Super Admin see all or filtered)
-router.get('/salary-history', requireRoles('EMPLOYEE', 'HR_ADMIN', 'SUPER_ADMIN'), getSalaryHistory);
+// Salary history (HR Admin + Super Admin only)
+router.get('/salary-history', requireRoles('HR_ADMIN', 'SUPER_ADMIN'), getSalaryHistory);
 
 // Monthly payroll calculation, generation & submission (HR Admin + Super Admin)
 router.get('/periods', requireRoles('HR_ADMIN', 'SUPER_ADMIN'), listPayrollPeriods);

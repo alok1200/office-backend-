@@ -3,6 +3,11 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { runMigrationsAndSeed } from './db/seed.js';
 import { query, pool } from './db/index.js';
+import {
+  sanitizeRequestMiddleware,
+  securityHeadersMiddleware,
+  createRateLimiter,
+} from './middleware/securityHardening.js';
 
 
 
@@ -24,33 +29,30 @@ const app = express();
 const PORT = process.env.PORT || 8086;
 const isProd = process.env.NODE_ENV === 'production';
 
-// Production security headers & body limit
+// Production security headers, sanitization, CORS & rate limiting
 app.disable('x-powered-by');
-app.use((req, res, next) => {
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  next();
-});
+app.use(securityHeadersMiddleware(isProd));
 
 const corsOrigin = process.env.CORS_ORIGIN?.trim()
   ? process.env.CORS_ORIGIN.split(',').map(o => o.trim()).filter(Boolean)
-  : '*';
+  : (isProd ? false : '*');
 
 // Middlewares
 app.use(cors({
   origin: corsOrigin,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id']
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json({
-  limit: '1mb',
+  limit: '256kb',
   verify: (req, res, buf) => {
     if (req.originalUrl?.startsWith('/api/payroll/webhooks/')) {
       req.rawBody = buf.toString('utf8');
     }
   }
 }));
+app.use(sanitizeRequestMiddleware);
+app.use('/api', createRateLimiter({ windowMs: 60_000, max: 600 }));
 
 // Health check
 app.get('/api/health', async (req,res) => {

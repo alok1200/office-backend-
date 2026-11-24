@@ -4,6 +4,15 @@ import crypto from 'crypto';
 const loginAttempts = new Map();
 const MAX_ATTEMPTS = 5;
 const WINDOW_MS = 15 * 60 * 1000; // 15 minutes window
+const MAX_RATE_LIMIT_ENTRIES = 10_000;
+
+// Pre-computed dummy credentials for constant-time login response when user is not found
+const DUMMY_SALT = '0123456789abcdef0123456789abcdef';
+const DUMMY_HASH = crypto.pbkdf2Sync('knooviq-dummy-password', DUMMY_SALT, 100000, 64, 'sha512').toString('hex');
+
+export function dummyPasswordVerify(password) {
+  return verifyPassword(String(password || 'x'), DUMMY_HASH, DUMMY_SALT);
+}
 
 /**
  * Hash password with PBKDF2 using Node.js crypto
@@ -54,6 +63,14 @@ export function checkRateLimit(key) {
 
 export function recordFailedAttempt(key) {
   const now = Date.now();
+  if (loginAttempts.size >= MAX_RATE_LIMIT_ENTRIES) {
+    for (const [k, rec] of loginAttempts.entries()) {
+      if (now - rec.firstAttempt > WINDOW_MS) loginAttempts.delete(k);
+    }
+    while (loginAttempts.size >= MAX_RATE_LIMIT_ENTRIES) {
+      loginAttempts.delete(loginAttempts.keys().next().value);
+    }
+  }
   const record = loginAttempts.get(key) || { count: 0, firstAttempt: now };
   record.count += 1;
   loginAttempts.set(key, record);
@@ -77,9 +94,36 @@ export function clearRateLimitForIdentifiers(identifiers = []) {
 const JWT_ISSUER = 'knooviq-attendance';
 const DEFAULT_JWT_TTL_SECONDS = 24 * 60 * 60; // 24 hours
 
+const PLACEHOLDER_SECRETS = new Set([
+  'change-this-to-a-strong-random-jwt-secret',
+  'secret',
+  'jwt_secret',
+  'password',
+  '12345678',
+]);
+let ephemeralProdSecret = null;
+let warnedWeakSecret = false;
+
 function getJwtSecret() {
-  const secret = process.env.JWT_SECRET || process.env.DATABASE_URL || 'knooviq-jwt-dev-secret-change-in-production';
-  return crypto.createHash('sha256').update(secret).digest();
+  const configured = String(process.env.JWT_SECRET || '').trim();
+  const isProd = process.env.NODE_ENV === 'production';
+  const isWeak = !configured || configured.length < 16 || PLACEHOLDER_SECRETS.has(configured.toLowerCase());
+
+  if (!isWeak) {
+    return crypto.createHash('sha256').update(configured).digest();
+  }
+  if (isProd) {
+    if (!warnedWeakSecret) {
+      warnedWeakSecret = true;
+      console.warn('[Security] JWT_SECRET is missing or too weak in production. Set a strong 32+ char JWT_SECRET in backend/.env.');
+    }
+    if (!ephemeralProdSecret) {
+      ephemeralProdSecret = `${process.env.DATABASE_URL || ''}:${crypto.randomBytes(32).toString('hex')}`;
+    }
+    return crypto.createHash('sha256').update(ephemeralProdSecret).digest();
+  }
+  const devSecret = process.env.DATABASE_URL || 'knooviq-jwt-dev-secret-change-in-production';
+  return crypto.createHash('sha256').update(devSecret).digest();
 }
 
 function getJwtTtlSeconds() {
