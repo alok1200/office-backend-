@@ -38,7 +38,7 @@ export function securityHeadersMiddleware(isProd = process.env.NODE_ENV === 'pro
     "default-src 'self'",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob: https://*.tile.openstreetmap.org https://unpkg.com",
+    "img-src 'self' data: blob: https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://server.arcgisonline.com https://unpkg.com",
     "font-src 'self' data:",
     "connect-src 'self' https://api.ipify.org https://api64.ipify.org",
     "frame-ancestors 'none'",

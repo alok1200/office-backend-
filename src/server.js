@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import { readFile } from 'node:fs/promises';
+import { createServer } from 'node:https';
 import { runMigrationsAndSeed } from './db/seed.js';
 import { query, pool } from './db/index.js';
 import {
@@ -104,12 +106,23 @@ app.use((err, req, res, next) => {
 
 // Start Server
 async function start(port = Number(PORT)) {
+  const keyPath = process.env.TLS_KEY_FILE?.trim();
+  const certPath = process.env.TLS_CERT_FILE?.trim();
+  if (Boolean(keyPath) !== Boolean(certPath)) {
+    throw new Error('Set both TLS_KEY_FILE and TLS_CERT_FILE to enable HTTPS.');
+  }
+  let httpsServer;
+  if (keyPath) {
+    const [key, cert] = await Promise.all([readFile(keyPath), readFile(certPath)]);
+    httpsServer = createServer({ key, cert }, app);
+  }
   await runMigrationsAndSeed();
   const currentPort = Number(port);
-  const server = app.listen(currentPort, () => {
+  const listener = httpsServer || app;
+  const server = listener.listen(currentPort, () => {
     console.log(`=========================================`);
     console.log(`  KNOOVIQ Attendance Server Running`);
-    console.log(`  Port: http://localhost:${currentPort}`);
+    console.log(`  Listening on port ${currentPort} (${httpsServer ? 'HTTPS' : 'HTTP'})`);
     console.log(`  Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`=========================================`);
   });
