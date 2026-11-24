@@ -30,6 +30,18 @@ export function sanitizeRequestMiddleware(req, res, next) {
   next();
 }
 
+export function redirectLanToHttps(value) {
+  const url = new URL(value);
+  if (url.protocol !== 'https:' || url.username || url.password || url.href !== `${url.origin}/`) {
+    throw new Error('LAN_HTTPS_URL must be an HTTPS origin.');
+  }
+
+  return (req, res, next) => {
+    if (req.secure || req.hostname?.toLowerCase() !== url.hostname || !['GET', 'HEAD'].includes(req.method)) return next();
+    res.redirect(307, `${url.origin}${req.originalUrl}`);
+  };
+}
+
 /**
  * OWASP HTTP Security Headers middleware.
  */

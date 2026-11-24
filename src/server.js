@@ -1,14 +1,17 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
-import { createServer } from 'node:https';
+import { createServer as createHttpServer } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import { runMigrationsAndSeed } from './db/seed.js';
 import { query, pool } from './db/index.js';
 import {
   sanitizeRequestMiddleware,
   securityHeadersMiddleware,
   createRateLimiter,
+  redirectLanToHttps,
 } from './middleware/securityHardening.js';
 
 
@@ -34,6 +37,8 @@ const isProd = process.env.NODE_ENV === 'production';
 // Production security headers, sanitization, CORS & rate limiting
 app.disable('x-powered-by');
 app.use(securityHeadersMiddleware(isProd));
+const lanHttpsUrl = process.env.LAN_HTTPS_URL?.trim();
+if (lanHttpsUrl) app.use(redirectLanToHttps(lanHttpsUrl));
 
 const corsOrigin = process.env.CORS_ORIGIN?.trim()
   ? process.env.CORS_ORIGIN.split(',').map(o => o.trim()).filter(Boolean)
@@ -108,39 +113,38 @@ app.use((err, req, res, next) => {
 async function start(port = Number(PORT)) {
   const keyPath = process.env.TLS_KEY_FILE?.trim();
   const certPath = process.env.TLS_CERT_FILE?.trim();
-  if (Boolean(keyPath) !== Boolean(certPath)) {
+  const tlsPort = process.env.TLS_PORT?.trim();
+  if ((keyPath || certPath || tlsPort) && (!keyPath || !certPath)) {
     throw new Error('Set both TLS_KEY_FILE and TLS_CERT_FILE to enable HTTPS.');
   }
-  let httpsServer;
+  if (tlsPort && Number(tlsPort) === port) {
+    throw new Error('TLS_PORT and PORT must be different when both listeners are enabled.');
+  }
+
+  const listeners = [];
   if (keyPath) {
     const [key, cert] = await Promise.all([readFile(keyPath), readFile(certPath)]);
-    httpsServer = createServer({ key, cert }, app);
+    listeners.push({ server: createHttpsServer({ key, cert }, app), port: Number(tlsPort || port), protocol: 'HTTPS' });
   }
-  await runMigrationsAndSeed();
-  const currentPort = Number(port);
-  const listener = httpsServer || app;
-  const server = listener.listen(currentPort, () => {
-    console.log(`=========================================`);
-    console.log(`  KNOOVIQ Attendance Server Running`);
-    console.log(`  Listening on port ${currentPort} (${httpsServer ? 'HTTPS' : 'HTTP'})`);
-    console.log(`  Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`=========================================`);
-  });
+  if (!keyPath || tlsPort) {
+    listeners.push({ server: createHttpServer(app), port, protocol: 'HTTP' });
+  }
 
-  server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-      console.error(`[Server] Port ${currentPort} is already in use. Stop the existing backend or set PORT explicitly; the frontend must use the same port.`);
-      process.exitCode = 1;
-    } else {
-      console.error('Server error:', err);
+  await runMigrationsAndSeed();
+  try {
+    for (const { server, port, protocol } of listeners) {
+      await once(server.listen(port), 'listening');
+      console.log(`[Server] KNOOVIQ Attendance listening on port ${server.address().port} (${protocol}).`);
     }
-  });
+  } catch (error) {
+    for (const { server } of listeners) if (server.listening) server.close();
+    throw error;
+  }
 
   const shutdown = (signal) => {
     console.log(`[Server] Received ${signal}. Shutting down gracefully...`);
-    server.close(() => {
-      pool.end().finally(() => process.exit(0));
-    });
+    Promise.all(listeners.map(({ server }) => new Promise(resolve => server.close(resolve))))
+      .then(() => pool.end()).finally(() => process.exit(0));
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
