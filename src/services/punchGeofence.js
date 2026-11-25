@@ -10,7 +10,7 @@ export function verifyPunchGeofence(office, body) {
   const radius = ATTENDANCE_RADIUS_M, maximumAccuracy = attendanceAccuracyLimit(office.max_accuracy_m);
   if (!numeric(office.latitude) || !numeric(office.longitude) || Math.abs(Number(office.latitude)) > 90 || Math.abs(Number(office.longitude)) > 180 || !numeric(office.radius_m) || Number(office.radius_m) <= 0 || !Number.isFinite(maximumAccuracy) || maximumAccuracy <= 0) fail('OFFICE_NOT_CONFIGURED', 'Office GPS settings are invalid. Contact your administrator.', {}, 409);
   const latitude = body.latitude ?? body.lat, longitude = body.longitude ?? body.lng;
-  if (!numeric(latitude) || !numeric(longitude) || Math.abs(Number(latitude)) > 90 || Math.abs(Number(longitude)) > 180 || !numeric(body.accuracy) || Number(body.accuracy) < 0) fail('GPS_REQUIRED', 'Location could not be verified. Enable precise GPS or use your registered office Wi-Fi for check-in and check-out.');
+  if (!numeric(latitude) || !numeric(longitude) || Math.abs(Number(latitude)) > 90 || Math.abs(Number(longitude)) > 180 || !numeric(body.accuracy) || Number(body.accuracy) < 0) fail('GPS_REQUIRED', 'GPS did not provide a usable location. Enable precise location and retry.');
   const accuracy = Number(body.accuracy);
   if (accuracy > maximumAccuracy) fail('LOW_ACCURACY', `GPS accuracy is ±${Math.round(accuracy)} m. This office requires ±${maximumAccuracy} m or better. Refresh GPS near a window or outdoors.`, { accuracy_m: accuracy, max_accuracy_m: maximumAccuracy });
   const distance = distanceMeters(Number(latitude), Number(longitude), Number(office.latitude), Number(office.longitude));
@@ -26,7 +26,15 @@ export function verifyPunchLocation(office, req) {
     const { action } = req.body;
     const isWorkdayPunch = action === 'CHECK_IN' || action === 'CHECK_OUT';
     const canFallBack = error.code === 'GPS_REQUIRED' || error.code === 'LOW_ACCURACY';
-    if (isWorkdayPunch && canFallBack && matchesOfficeWifi(req, office)) return 'OFFICE_WIFI';
+    if (canFallBack || error.code === 'OUTSIDE_GEOFENCE') {
+      const wifiMatched = matchesOfficeWifi(req, office);
+      if (isWorkdayPunch && canFallBack && wifiMatched) return 'OFFICE_WIFI';
+      error.details = {
+        ...error.details,
+        wifi_attendance_enabled: Boolean(office?.wifi_attendance_enabled),
+        office_wifi_matched: wifiMatched
+      };
+    }
     throw error;
   }
 }
