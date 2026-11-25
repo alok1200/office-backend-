@@ -1,5 +1,5 @@
 import { pool, query, transaction } from '../db/index.js';
-import { isPrivateOfficeNetwork, matchOfficeIP, peerAddress, validateOffice, validateOfficeCoordinates } from '../services/officeNetworks.js';
+import { isPrivateOfficeNetwork, matchOfficeIP, officeConnection, validateOffice, validateOfficeCoordinates, validateOfficePublicIP } from '../services/officeNetworks.js';
 import { ATTENDANCE_RADIUS_M, attendanceAccuracyLimit } from '../services/punchGeofence.js';
 const fail = (message, status = 400) => {
   throw Object.assign(new Error(message), {
@@ -38,7 +38,7 @@ export async function listOffices(req, res) {
   try {
     const snapshot = await sqlSnapshot(query);
     const primary = primaryOffice(snapshot.offices);
-    const ip = peerAddress(req);
+    const { ip, type } = officeConnection(req);
     const offices = snapshot.offices.map(o => {
       const assigned = snapshot.users.filter(u => u.office_id === o.id);
       const inherited = o.id === primary?.id ? snapshot.users.filter(u => !u.office_id) : [];
@@ -52,7 +52,7 @@ export async function listOffices(req, res) {
         user_ids: assigned.map(u => u.id),
         users_count: assigned.length + inherited.length,
         inherited_users_count: inherited.length,
-        network_matches: ip ? matchOfficeIP(ip, o.office_ips || []) : false
+        network_matches: Boolean(ip) && (type === 'PUBLIC' ? ip === o.office_public_ip : matchOfficeIP(ip, o.office_ips || []))
       };
     });
     res.json({
@@ -61,7 +61,7 @@ export async function listOffices(req, res) {
         offices,
         users: snapshot.users.map(safeUser),
         connection_ip: ip,
-        connection_source: 'Direct connection seen by the API server',
+        connection_source: type === 'PUBLIC' ? 'Public connection seen by Render' : 'Direct connection seen by the API server',
         matched_office_ids: offices.filter(o => o.network_matches).map(o => o.id)
       }
     });
@@ -123,12 +123,13 @@ export async function saveOffice(req, res) {
     const before = id ? snapshot.offices.find(o => o.id === id) : null;
     if (id && !before) fail('Office not found.', 404);
     const wifiEnabled = req.body.wifi_attendance_enabled ?? before?.wifi_attendance_enabled ?? false;
+    const publicIP = req.body.office_public_ip === undefined ? before?.office_public_ip ?? null : validateOfficePublicIP(req.body.office_public_ip);
     if (typeof wifiEnabled !== 'boolean') fail('Choose whether to allow office Wi-Fi attendance.');
-    if (wifiEnabled && !data.office_ips.some(isPrivateOfficeNetwork)) fail('Add a private office Wi-Fi IP address or subnet before enabling Wi-Fi attendance.');
+    if (wifiEnabled && !publicIP && !data.office_ips.some(isPrivateOfficeNetwork)) fail('Add a private office subnet or the dedicated public IP before enabling Wi-Fi attendance.');
     validateAssignment(data, snapshot.users, before, snapshot.offices);
     if (data.is_primary) await client.query('UPDATE office_locations SET is_primary = false WHERE is_primary = true');
-    const args = [data.name, data.latitude, data.longitude, data.radius_m, data.max_accuracy_m, data.address, data.timezone, JSON.stringify(data.office_ips), data.is_primary, req.user.id, now, wifiEnabled];
-    saved = id ? (await client.query('UPDATE office_locations SET name=$1, latitude=$2, longitude=$3, radius_m=$4, max_accuracy_m=$5, address=$6, timezone=$7, office_ips=$8, is_primary=$9, updated_by=$10, updated_at=$11, wifi_attendance_enabled=$12 WHERE id=$13 RETURNING *', [...args, id])).rows[0] : (await client.query('INSERT INTO office_locations (name,latitude,longitude,radius_m,max_accuracy_m,address,timezone,office_ips,is_primary,updated_by,updated_at,wifi_attendance_enabled) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *', args)).rows[0];
+    const args = [data.name, data.latitude, data.longitude, data.radius_m, data.max_accuracy_m, data.address, data.timezone, JSON.stringify(data.office_ips), data.is_primary, req.user.id, now, wifiEnabled, publicIP];
+    saved = id ? (await client.query('UPDATE office_locations SET name=$1, latitude=$2, longitude=$3, radius_m=$4, max_accuracy_m=$5, address=$6, timezone=$7, office_ips=$8, is_primary=$9, updated_by=$10, updated_at=$11, wifi_attendance_enabled=$12, office_public_ip=$13 WHERE id=$14 RETURNING *', [...args, id])).rows[0] : (await client.query('INSERT INTO office_locations (name,latitude,longitude,radius_m,max_accuracy_m,address,timezone,office_ips,is_primary,updated_by,updated_at,wifi_attendance_enabled,office_public_ip) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *', args)).rows[0];
     await client.query('UPDATE employees SET office_id = NULL WHERE office_id = $1 AND NOT (id = ANY($2::int[]))', [saved.id, data.user_ids]);
     await client.query('UPDATE employees SET office_id = $1 WHERE id = ANY($2::int[])', [saved.id, data.user_ids]);
     await client.query('INSERT INTO admin_audit_log (actor_id, action, entity_type, entity_id, before_data, after_data) VALUES ($1,$2,$3,$4,$5,$6)', [req.user.id, id ? 'UPDATE_OFFICE' : 'CREATE_OFFICE', 'office', saved.id, JSON.stringify(before ? {

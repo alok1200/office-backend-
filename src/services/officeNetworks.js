@@ -64,6 +64,30 @@ export function peerAddress(req) {
   try { return normalizeNetwork(req.socket.remoteAddress).text; } catch { return null; }
 }
 const privateNetworks = ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7'].map(normalizeNetwork);
+const nonPublicIPv4 = [
+  '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12',
+  '192.0.0.0/24', '192.0.2.0/24', '192.88.99.0/24', '192.168.0.0/16', '198.18.0.0/15',
+  '198.51.100.0/24', '203.0.113.0/24', '224.0.0.0/3'
+];
+
+export function validateOfficePublicIP(value) {
+  if (value === null) return null;
+  if (typeof value !== 'string') fail('Enter the dedicated public IPv4 address assigned by your ISP.');
+  const ip = value.trim();
+  if (!ip) return null;
+  if (isIP(ip) !== 4 || matchOfficeIP(ip, nonPublicIPv4)) fail('Enter one dedicated public IPv4 address, without a subnet or private address.');
+  return ip;
+}
+
+export function officeConnection(req, env = process.env) {
+  if (env.RENDER_SERVICE_TYPE !== 'web') return { ip: peerAddress(req), type: 'LAN' };
+
+  // Render public ingress overwrites CF-Connecting-IP. Enable only where ingress is trusted.
+  const address = req.headers?.['cf-connecting-ip'];
+  if (env.TRUST_RENDER_CLIENT_IP !== 'true' || typeof address !== 'string' || !isIP(address)) return { ip: null, type: 'PUBLIC' };
+  const ip = normalizeNetwork(address).text;
+  return { ip, type: 'PUBLIC' };
+}
 
 export function isPrivateOfficeNetwork(entry) {
   let network;
@@ -75,11 +99,12 @@ export function isPrivateOfficeNetwork(entry) {
   });
 }
 
-export function matchesOfficeWifi(req, office) {
+export function matchesOfficeWifi(req, office, env = process.env) {
   if (!office?.wifi_attendance_enabled) return false;
-  const address = peerAddress(req);
-  if (!address || !isPrivateOfficeNetwork(address)) return false;
-  return matchOfficeIP(address, (office.office_ips || []).filter(isPrivateOfficeNetwork));
+  const { ip, type } = officeConnection(req, env);
+  if (!ip) return false;
+  if (type === 'PUBLIC') return ip === office.office_public_ip;
+  return isPrivateOfficeNetwork(ip) && matchOfficeIP(ip, (office.office_ips || []).filter(isPrivateOfficeNetwork));
 }
 function number(value, label, min, max, integer = false) {
   if (value === null || value === undefined || value === '' || (typeof value === 'string' && !value.trim()) || !['string', 'number'].includes(typeof value)) fail(`${label} is required.`);

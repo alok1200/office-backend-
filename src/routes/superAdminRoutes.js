@@ -1,7 +1,7 @@
 import express from 'express';
 import { authenticateUser, requireRoles } from '../middleware/auth.js';
 import { configuredOffice } from '../services/officeConfiguration.js';
-import { matchOfficeIP, peerAddress } from '../services/officeNetworks.js';
+import { matchOfficeIP, officeConnection } from '../services/officeNetworks.js';
 import { listOffices, saveOffice, deleteOffice, officeAuditLog } from '../controllers/superAdminOfficesController.js';
 import { requestOptions, previewRequest, createPersonalRequest, cancelPersonalRequest } from '../controllers/superAdminRequestsController.js';
 import { pendingApprovals, reviewRequest, monthlyAttendance, exportMonthlyAttendance, getHRRequests, getAllRequests, editAttendance } from '../controllers/superAdminOperationsController.js';
@@ -14,7 +14,7 @@ router.post('/hr-admins', createHRAdmin);
 router.get('/dashboard', async (req, res, next) => {
   try {
     const office = await configuredOffice(req.query.office === 'primary' ? {} : req.user);
-    const connectionIP = peerAddress(req);
+    const { ip: connectionIP, type } = officeConnection(req);
     res.json({
       success: true,
       data: {
@@ -22,7 +22,7 @@ router.get('/dashboard', async (req, res, next) => {
         demo: false,
         network: {
           ip: connectionIP,
-          matched: !!office && matchOfficeIP(connectionIP, office.office_ips || [])
+          matched: !!office && !!connectionIP && (type === 'PUBLIC' ? connectionIP === office.office_public_ip : matchOfficeIP(connectionIP, office.office_ips || []))
         },
         personalAttendanceEnabled: false,
         notesEnabled: false,

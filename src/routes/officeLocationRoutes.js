@@ -3,7 +3,7 @@ import { authenticateUser, requireRoles } from '../middleware/auth.js';
 import { query } from '../db/index.js';
 import { configuredOffice } from '../services/officeConfiguration.js';
 import { ATTENDANCE_RADIUS_M } from '../services/punchGeofence.js';
-import { matchesOfficeWifi } from '../services/officeNetworks.js';
+import { matchesOfficeWifi, officeConnection } from '../services/officeNetworks.js';
 import { saveOffice, updatePrimaryOfficeCoordinates } from '../controllers/superAdminOfficesController.js';
 const router = express.Router();
 router.use(authenticateUser);
@@ -18,11 +18,19 @@ router.get('/', async (req, res, next) => {
     });
     const {
       office_ips,
+      office_public_ip,
       ...location
     } = office;
+    const connection = officeConnection(req);
     res.json({
       success: true,
-      data: req.user.role === 'SUPER_ADMIN' ? office : { ...location, office_wifi_matched: matchesOfficeWifi(req, office) }
+      data: req.user.role === 'SUPER_ADMIN' ? office : {
+        ...location,
+        office_wifi_matched: matchesOfficeWifi(req, office),
+        office_public_ip_configured: Boolean(office_public_ip),
+        office_connection_ip: connection.ip,
+        office_connection_type: connection.type
+      }
     });
   } catch (error) {
     next(error);
