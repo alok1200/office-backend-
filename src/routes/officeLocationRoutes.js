@@ -3,6 +3,7 @@ import { authenticateUser, requireRoles } from '../middleware/auth.js';
 import { query } from '../db/index.js';
 import { configuredOffice } from '../services/officeConfiguration.js';
 import { ATTENDANCE_RADIUS_M } from '../services/punchGeofence.js';
+import { matchesOfficeWifi } from '../services/officeNetworks.js';
 import { saveOffice, updatePrimaryOfficeCoordinates } from '../controllers/superAdminOfficesController.js';
 const router = express.Router();
 router.use(authenticateUser);
@@ -21,7 +22,7 @@ router.get('/', async (req, res, next) => {
     } = office;
     res.json({
       success: true,
-      data: req.user.role === 'SUPER_ADMIN' ? office : location
+      data: req.user.role === 'SUPER_ADMIN' ? office : { ...location, office_wifi_matched: matchesOfficeWifi(req, office) }
     });
   } catch (error) {
     next(error);

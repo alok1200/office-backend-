@@ -3,7 +3,7 @@ import { reportPeriod, indiaDate } from '../services/superAdminAttendanceReport.
 import { plannedRequestForDate, resolveAttendanceStatus } from '../services/plannedAttendance.js';
 import { companyDate, companyAttendance } from '../services/companyAttendance.js';
 import { configuredOffice } from '../services/officeConfiguration.js';
-import { verifyPunchGeofence } from '../services/punchGeofence.js';
+import { verifyPunchLocation } from '../services/punchGeofence.js';
 function getTodayDateString() { return indiaDate(); }
 function calculateDurations(attendance, breaks) {
   let totalBreakMinutes = 0;
@@ -100,7 +100,7 @@ export async function recordPunch(req, res) {
       let status = 200;
       const response = { status(code) { status = code; return this; }, json(body) { return { status, body }; } };
       const employee = req.user;
-      const account = (await query('SELECT is_active FROM employees WHERE id=$1 FOR UPDATE', [employee.id])).rows[0];
+      const account = (await query('SELECT is_active, office_id FROM employees WHERE id=$1 FOR UPDATE', [employee.id])).rows[0];
       if (!account?.is_active) return response.status(403).json({ success: false, error: 'Your account is inactive.' });
 
       // Check if attendance recording is enabled for account
@@ -120,18 +120,18 @@ export async function recordPunch(req, res) {
         error: 'INVALID_ACTION',
         message: 'Choose a valid attendance action.'
       });
-      { // Every attendance action requires current GPS inside the office boundary.
-        try {
-          verifyPunchGeofence(await configuredOffice(employee), req.body);
-        } catch (error) {
-          if (!error.code) throw error;
-          return response.status(error.status || 400).json({
-            success: false,
-            error: error.code,
-            message: error.message,
-            ...error.details
-          });
-        }
+      const office = await configuredOffice(account, query);
+      let verificationMethod;
+      try {
+        verificationMethod = verifyPunchLocation(office, req);
+      } catch (error) {
+        if (!error.code) throw error;
+        return response.status(error.status || 400).json({
+          success: false,
+          error: error.code,
+          message: error.message,
+          ...error.details
+        });
       }
       const today = getTodayDateString();
       const nowIso = new Date().toISOString();
@@ -227,7 +227,10 @@ export async function recordPunch(req, res) {
       } = calculateDurations(record, breaks);
       return response.json({
         success: true,
-        message: `Successfully executed '${action}'.`,
+        message: verificationMethod === 'OFFICE_WIFI'
+          ? `${action === 'CHECK_IN' ? 'Checked in' : 'Checked out'} using office Wi-Fi.`
+          : `Successfully executed '${action}'.`,
+        verification_method: verificationMethod,
         data: {
           ...record,
           total_work_minutes: totalWorkMinutes,

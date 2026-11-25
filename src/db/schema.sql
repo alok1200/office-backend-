@@ -122,6 +122,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_app ON application_audit_log(application_id
 ALTER TABLE office_locations ALTER COLUMN radius_m SET DEFAULT 100;
 ALTER TABLE office_locations ADD COLUMN IF NOT EXISTS timezone VARCHAR(100) NOT NULL DEFAULT 'Asia/Kolkata';
 ALTER TABLE office_locations ADD COLUMN IF NOT EXISTS office_ips JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE office_locations ADD COLUMN IF NOT EXISTS wifi_attendance_enabled BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE office_locations ADD COLUMN IF NOT EXISTS is_primary BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE employees ADD COLUMN IF NOT EXISTS office_id INTEGER REFERENCES office_locations(id) ON DELETE SET NULL;
 UPDATE office_locations SET is_primary = TRUE

@@ -63,6 +63,24 @@ export function peerAddress(req) {
   // Forwarding headers are deliberately not trusted by this direct-server setup.
   try { return normalizeNetwork(req.socket.remoteAddress).text; } catch { return null; }
 }
+const privateNetworks = ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7'].map(normalizeNetwork);
+
+export function isPrivateOfficeNetwork(entry) {
+  let network;
+  try { network = normalizeNetwork(entry); } catch { return false; }
+  return privateNetworks.some(range => {
+    if (range.bits !== network.bits || network.prefix < range.prefix) return false;
+    const shift = BigInt(range.bits - range.prefix);
+    return network.value >> shift === range.value >> shift;
+  });
+}
+
+export function matchesOfficeWifi(req, office) {
+  if (!office?.wifi_attendance_enabled) return false;
+  const address = peerAddress(req);
+  if (!address || !isPrivateOfficeNetwork(address)) return false;
+  return matchOfficeIP(address, (office.office_ips || []).filter(isPrivateOfficeNetwork));
+}
 function number(value, label, min, max, integer = false) {
   if (value === null || value === undefined || value === '' || (typeof value === 'string' && !value.trim()) || !['string', 'number'].includes(typeof value)) fail(`${label} is required.`);
   const numeric = Number(value);

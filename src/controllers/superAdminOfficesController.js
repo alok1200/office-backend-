@@ -1,5 +1,5 @@
 import { pool, query, transaction } from '../db/index.js';
-import { matchOfficeIP, peerAddress, validateOffice, validateOfficeCoordinates } from '../services/officeNetworks.js';
+import { isPrivateOfficeNetwork, matchOfficeIP, peerAddress, validateOffice, validateOfficeCoordinates } from '../services/officeNetworks.js';
 import { ATTENDANCE_RADIUS_M, attendanceAccuracyLimit } from '../services/punchGeofence.js';
 const fail = (message, status = 400) => {
   throw Object.assign(new Error(message), {
@@ -122,10 +122,13 @@ export async function saveOffice(req, res) {
     }
     const before = id ? snapshot.offices.find(o => o.id === id) : null;
     if (id && !before) fail('Office not found.', 404);
+    const wifiEnabled = req.body.wifi_attendance_enabled ?? before?.wifi_attendance_enabled ?? false;
+    if (typeof wifiEnabled !== 'boolean') fail('Choose whether to allow office Wi-Fi attendance.');
+    if (wifiEnabled && !data.office_ips.some(isPrivateOfficeNetwork)) fail('Add a private office Wi-Fi IP address or subnet before enabling Wi-Fi attendance.');
     validateAssignment(data, snapshot.users, before, snapshot.offices);
     if (data.is_primary) await client.query('UPDATE office_locations SET is_primary = false WHERE is_primary = true');
-    const args = [data.name, data.latitude, data.longitude, data.radius_m, data.max_accuracy_m, data.address, data.timezone, JSON.stringify(data.office_ips), data.is_primary, req.user.id, now];
-    saved = id ? (await client.query('UPDATE office_locations SET name=$1, latitude=$2, longitude=$3, radius_m=$4, max_accuracy_m=$5, address=$6, timezone=$7, office_ips=$8, is_primary=$9, updated_by=$10, updated_at=$11 WHERE id=$12 RETURNING *', [...args, id])).rows[0] : (await client.query('INSERT INTO office_locations (name,latitude,longitude,radius_m,max_accuracy_m,address,timezone,office_ips,is_primary,updated_by,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *', args)).rows[0];
+    const args = [data.name, data.latitude, data.longitude, data.radius_m, data.max_accuracy_m, data.address, data.timezone, JSON.stringify(data.office_ips), data.is_primary, req.user.id, now, wifiEnabled];
+    saved = id ? (await client.query('UPDATE office_locations SET name=$1, latitude=$2, longitude=$3, radius_m=$4, max_accuracy_m=$5, address=$6, timezone=$7, office_ips=$8, is_primary=$9, updated_by=$10, updated_at=$11, wifi_attendance_enabled=$12 WHERE id=$13 RETURNING *', [...args, id])).rows[0] : (await client.query('INSERT INTO office_locations (name,latitude,longitude,radius_m,max_accuracy_m,address,timezone,office_ips,is_primary,updated_by,updated_at,wifi_attendance_enabled) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *', args)).rows[0];
     await client.query('UPDATE employees SET office_id = NULL WHERE office_id = $1 AND NOT (id = ANY($2::int[]))', [saved.id, data.user_ids]);
     await client.query('UPDATE employees SET office_id = $1 WHERE id = ANY($2::int[])', [saved.id, data.user_ids]);
     await client.query('INSERT INTO admin_audit_log (actor_id, action, entity_type, entity_id, before_data, after_data) VALUES ($1,$2,$3,$4,$5,$6)', [req.user.id, id ? 'UPDATE_OFFICE' : 'CREATE_OFFICE', 'office', saved.id, JSON.stringify(before ? {
