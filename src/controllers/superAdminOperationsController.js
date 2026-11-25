@@ -10,24 +10,44 @@ const errorResponse = (res, error) => res.status(error.status || 500).json({
   error: error.status ? error.message : 'Could not complete the operation. Please retry.',
   ...(error.attendanceConflicts ? { attendance_conflicts: error.attendanceConflicts } : {})
 });
+const blocksTimeOff = (row, halfDay) => ['CHECKED_IN', 'ON_BREAK'].includes(row.current_state)
+  || (!halfDay && Boolean(row.check_in || row.check_out));
+
 export async function pendingApprovals(req, res) {
   try {
-    let rows;
-    rows = (await query("SELECT r.*, e.first_name, e.last_name, e.employee_id AS emp_code, e.department_name FROM requests r JOIN employees e ON e.id = r.employee_id WHERE r.status = 'PENDING' ORDER BY r.submission_date, r.id")).rows;
-    const holidays = (await query('SELECT holiday_date FROM holidays')).rows;
+    const [{ rows }, { rows: holidays }, { rows: attendance }] = await Promise.all([
+      query("SELECT r.*, e.first_name, e.last_name, e.employee_id AS emp_code, e.department_name FROM requests r JOIN employees e ON e.id = r.employee_id WHERE r.status = 'PENDING' ORDER BY r.submission_date, r.id"),
+      query('SELECT holiday_date FROM holidays'),
+      query(`SELECT r.id AS request_id, a.work_date, a.current_state, a.check_in, a.check_out
+        FROM requests r JOIN attendances a ON a.employee_id = r.employee_id AND a.work_date BETWEEN r.start_date AND r.end_date
+        WHERE r.status = 'PENDING' AND r.request_type IN ('LEAVE', 'HOLIDAY')
+          AND (a.current_state IN ('CHECKED_IN', 'ON_BREAK') OR a.check_in IS NOT NULL OR a.check_out IS NOT NULL)
+        ORDER BY r.id, a.work_date`)
+    ]);
+    const attendanceByRequest = new Map();
+    for (const { request_id, ...record } of attendance) {
+      if (!attendanceByRequest.has(request_id)) attendanceByRequest.set(request_id, []);
+      attendanceByRequest.get(request_id).push(record);
+    }
     const data = rows.map(row => {
       let reviewDays = null;
+      let conflicts = [];
       try {
-        reviewDays = calculateRequest({
-          category: row.metadata?.category || 'OFFICIAL',
+        const halfDay = row.request_type !== 'HOLIDAY' && row.metadata?.half_day === true;
+        const calculation = calculateRequest({
+          category: row.request_type === 'HOLIDAY' ? 'HOLIDAY' : row.metadata?.category || 'OFFICIAL',
           start_date: dateKey(row.start_date),
           end_date: dateKey(row.end_date),
-          half_day: row.metadata?.half_day === true
-        }, holidays).days;
+          half_day: halfDay
+        }, holidays);
+        reviewDays = calculation.days;
+        const dates = new Set(calculation.dates);
+        conflicts = (attendanceByRequest.get(row.id) || []).filter(record => dates.has(dateKey(record.work_date)) && blocksTimeOff(record, halfDay));
       } catch {/* Invalid legacy dates require review; never invent a duration. */}
       return {
         ...row,
-        review_days: reviewDays
+        review_days: reviewDays,
+        attendance_conflicts: conflicts
       };
     });
     res.json({
@@ -224,8 +244,7 @@ export async function reviewRequest(req, res) {
         'SELECT work_date, current_state, check_in, check_out FROM attendances WHERE employee_id = $1 AND work_date = ANY($2::date[]) ORDER BY work_date FOR UPDATE',
         [identity.employee_id, [...plannedStatuses.keys()]]
       );
-      const conflicts = existingAttendance.filter(row => ['CHECKED_IN', 'ON_BREAK'].includes(row.current_state)
-        || (plannedStatuses.get(dateKey(row.work_date)) !== 'HALF_DAY' && (row.check_in || row.check_out)));
+      const conflicts = existingAttendance.filter(row => blocksTimeOff(row, plannedStatuses.get(dateKey(row.work_date)) === 'HALF_DAY'));
       if (conflicts.length) {
         throw Object.assign(new Error('This request is still pending because it overlaps recorded attendance.'), {
           status: 409,
