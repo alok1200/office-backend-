@@ -7,7 +7,8 @@ import { csvExport, xlsxExport } from '../utils/reportExport.js';
 import {planAttendanceEdit} from '../services/attendanceEdit.js';
 const errorResponse = (res, error) => res.status(error.status || 500).json({
   success: false,
-  error: error.status ? error.message : 'Could not complete the operation. Please retry.'
+  error: error.status ? error.message : 'Could not complete the operation. Please retry.',
+  ...(error.attendanceConflicts ? { attendance_conflicts: error.attendanceConflicts } : {})
 });
 export async function pendingApprovals(req, res) {
   try {
@@ -218,11 +219,20 @@ export async function reviewRequest(req, res) {
       });
     }
     if (plan.attendanceDates?.length) {
+      const plannedStatuses = new Map(plan.attendanceDates.map(entry => [entry.work_date, entry.status]));
+      const { rows: existingAttendance } = await client.query(
+        'SELECT work_date, current_state, check_in, check_out FROM attendances WHERE employee_id = $1 AND work_date = ANY($2::date[]) ORDER BY work_date FOR UPDATE',
+        [identity.employee_id, [...plannedStatuses.keys()]]
+      );
+      const conflicts = existingAttendance.filter(row => ['CHECKED_IN', 'ON_BREAK'].includes(row.current_state)
+        || (plannedStatuses.get(dateKey(row.work_date)) !== 'HALF_DAY' && (row.check_in || row.check_out)));
+      if (conflicts.length) {
+        throw Object.assign(new Error('This request is still pending because it overlaps recorded attendance.'), {
+          status: 409,
+          attendanceConflicts: conflicts
+        });
+      }
       for (const entry of plan.attendanceDates) {
-        const existing = (await client.query('SELECT * FROM attendances WHERE employee_id=$1 AND work_date=$2 FOR UPDATE', [entry.employee_id, entry.work_date])).rows[0];
-        if (existing && (['CHECKED_IN', 'ON_BREAK'].includes(existing.current_state) || (entry.status !== 'HALF_DAY' && (existing.check_in || existing.check_out)))) {
-          throw Object.assign(new Error('These dates contain recorded attendance. Review the punches before approving time off.'), { status: 409 });
-        }
         await client.query(
           `INSERT INTO attendances (employee_id, work_date, current_state, status, total_work_minutes, total_break_minutes, notes, updated_at)
            VALUES ($1, $2, 'NOT_CHECKED_IN', $3, 0, 0, $4, $5)
