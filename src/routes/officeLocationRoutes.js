@@ -22,6 +22,7 @@ router.get('/', async (req, res, next) => {
       ...location
     } = office;
     const connection = officeConnection(req);
+    const loopback = connection.type === 'LAN' && ['127.0.0.1', '::1'].includes(connection.ip);
     res.json({
       success: true,
       data: req.user.role === 'SUPER_ADMIN' ? office : {
@@ -29,7 +30,8 @@ router.get('/', async (req, res, next) => {
         office_wifi_matched: matchesOfficeWifi(req, office),
         office_public_ip_configured: Boolean(office_public_ip),
         office_connection_ip: connection.ip,
-        office_connection_type: connection.type
+        office_connection_type: connection.type,
+        ...(loopback && office.wifi_attendance_enabled && req.app.locals.officeLanUrl ? { office_lan_url: req.app.locals.officeLanUrl } : {})
       }
     });
   } catch (error) {

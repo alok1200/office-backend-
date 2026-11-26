@@ -38,7 +38,10 @@ const isProd = process.env.NODE_ENV === 'production';
 app.disable('x-powered-by');
 app.use(securityHeadersMiddleware(isProd));
 const lanHttpsUrl = process.env.LAN_HTTPS_URL?.trim();
-if (lanHttpsUrl) app.use(redirectLanToHttps(lanHttpsUrl));
+if (lanHttpsUrl) {
+  app.use(redirectLanToHttps(lanHttpsUrl));
+  app.locals.officeLanUrl = new URL(lanHttpsUrl).origin;
+}
 
 const corsOrigin = process.env.CORS_ORIGIN?.trim()
   ? process.env.CORS_ORIGIN.split(',').map(o => o.trim()).filter(Boolean)
