@@ -19,6 +19,7 @@ router.get('/', async (req, res, next) => {
     const {
       office_ips,
       office_public_ip,
+      office_public_ipv6_cidr,
       ...location
     } = office;
     const connection = officeConnection(req);
@@ -29,6 +30,7 @@ router.get('/', async (req, res, next) => {
         ...location,
         office_wifi_matched: matchesOfficeWifi(req, office),
         office_public_ip_configured: Boolean(office_public_ip),
+        office_public_ipv6_configured: Boolean(office_public_ipv6_cidr),
         office_connection_ip: connection.ip,
         office_connection_type: connection.type,
         ...(loopback && office.wifi_attendance_enabled && req.app.locals.officeLanUrl ? { office_lan_url: req.app.locals.officeLanUrl } : {})

@@ -80,6 +80,30 @@ export function validateOfficePublicIP(value) {
   return ip;
 }
 
+function isPublicIPv6(address) {
+  return isIP(address) === 6 && matchOfficeIP(address, ['2000::/3']) &&
+    !matchOfficeIP(address, ['2001:db8::/32', '3fff::/20']);
+}
+
+export function publicIPv6Prefix(address) {
+  return typeof address === 'string' && isPublicIPv6(address) ? normalizeNetwork(`${address}/64`).text : null;
+}
+
+export function validateOfficePublicIPv6CIDR(value) {
+  if (value === null || typeof value === 'string' && !value.trim()) return null;
+  const parts = typeof value === 'string' ? value.trim().split('/') : [];
+  const prefix = parts.length === 2 && parts[1] === '64' ? publicIPv6Prefix(parts[0]) : null;
+  if (!prefix) fail('Enter the public IPv6 subnet assigned to the office Wi-Fi in /64 format.');
+  return prefix;
+}
+
+export function matchesPublicOfficeNetwork(ip, office) {
+  if (!ip || !office) return false;
+  if (isIP(ip) === 4) return ip === office.office_public_ip;
+  const prefix = publicIPv6Prefix(ip);
+  return prefix !== null && prefix === office.office_public_ipv6_cidr;
+}
+
 export function officeConnection(req, env = process.env) {
   if (env.RENDER_SERVICE_TYPE !== 'web') return { ip: peerAddress(req), type: 'LAN' };
 
@@ -118,7 +142,7 @@ export function matchesOfficeWifi(req, office, env = process.env) {
   if (!office?.wifi_attendance_enabled) return false;
   const { ip, type } = officeConnection(req, env);
   if (!ip) return false;
-  if (type === 'PUBLIC') return ip === office.office_public_ip;
+  if (type === 'PUBLIC') return matchesPublicOfficeNetwork(ip, office);
   return isPrivateOfficeNetwork(ip) && matchOfficeIP(ip, (office.office_ips || []).filter(isPrivateOfficeNetwork));
 }
 function number(value, label, min, max, integer = false) {
