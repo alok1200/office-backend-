@@ -34,11 +34,12 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 8086;
 const isProd = process.env.NODE_ENV === 'production';
+const usesRenderHttps = process.env.RENDER === 'true' && process.env.RENDER_SERVICE_TYPE === 'web';
 
 // Production security headers, sanitization, CORS & rate limiting
 app.disable('x-powered-by');
 app.use(securityHeadersMiddleware(isProd));
-const lanHttpsUrl = process.env.LAN_HTTPS_URL?.trim();
+const lanHttpsUrl = usesRenderHttps ? undefined : process.env.LAN_HTTPS_URL?.trim();
 if (lanHttpsUrl) {
   app.use(redirectLanToHttps(lanHttpsUrl));
   app.locals.officeLanUrl = new URL(lanHttpsUrl).origin;
@@ -133,9 +134,9 @@ app.use((err, req, res, next) => {
 
 // Start Server
 async function start(port = Number(PORT)) {
-  const keyPath = process.env.TLS_KEY_FILE?.trim();
-  const certPath = process.env.TLS_CERT_FILE?.trim();
-  const tlsPort = process.env.TLS_PORT?.trim();
+  const keyPath = usesRenderHttps ? undefined : process.env.TLS_KEY_FILE?.trim();
+  const certPath = usesRenderHttps ? undefined : process.env.TLS_CERT_FILE?.trim();
+  const tlsPort = usesRenderHttps ? undefined : process.env.TLS_PORT?.trim();
   if ((keyPath || certPath || tlsPort) && (!keyPath || !certPath)) {
     throw new Error('Set both TLS_KEY_FILE and TLS_CERT_FILE to enable HTTPS.');
   }
