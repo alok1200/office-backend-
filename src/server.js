@@ -85,10 +85,17 @@ app.use('/api', (req, res) => res.status(404).json({ success: false, error: 'API
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const frontendDist = fileURLToPath(new URL('../../frontend/dist/',import.meta.url));
-app.use(express.static(frontendDist));
+app.use(express.static(frontendDist, {
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    }
+  }
+}));
 app.use(['/assets', '/branding'], (req, res) => res.status(404).end());
 // Serve SPA routes when a frontend build is available.
 app.get('*', (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   res.sendFile(path.join(frontendDist, 'index.html'), error => {
     if (!error) return;
     if (res.headersSent || error.code !== 'ENOENT') return next(error);
