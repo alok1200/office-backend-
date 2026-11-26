@@ -13,7 +13,10 @@ const respondError = (res, err) => res.status(err.status || 500).json({
 });
 const validDate = (val, label) => {
   const s = String(val ?? '').trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || Number.isNaN(new Date(`${s}T00:00:00Z`).getTime())) fail(`${label} must be a valid YYYY-MM-DD date.`);
+  const date = new Date(`${s}T00:00:00Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || s.startsWith('0000') || Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== s) {
+    fail(`${label} must be a valid YYYY-MM-DD date.`);
+  }
   return s;
 };
 const safeId = (val, label = 'ID') => {
@@ -714,7 +717,7 @@ export async function retrySalaryPayment(req, res) {
         );
         if (liveStatus.status === 'SUCCESS' || liveStatus.status === 'PROCESSING') {
           await query(
-            `UPDATE salary_payments SET status = $1, provider_utr = COALESCE($2, provider_utr), failure_reason = NULL,
+            `UPDATE salary_payments SET status = $1::varchar, provider_utr = COALESCE($2, provider_utr), failure_reason = NULL,
                completed_at = CASE WHEN $1 = 'SUCCESS' THEN CURRENT_TIMESTAMP ELSE completed_at END, updated_at = CURRENT_TIMESTAMP
              WHERE id = $3`,
             [liveStatus.status, liveStatus.providerUtr, existing.id]

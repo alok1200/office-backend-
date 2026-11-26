@@ -1,7 +1,7 @@
 import { pool, query } from '../db/index.js';
 import { createPaymentAdapter, decryptAccountNumber } from './paymentProvider.js';
 
-let running = false;
+let paymentQueue = Promise.resolve();
 
 async function syncPeriodStatus(client, payrollPeriodId) {
   const stats = (await client.query(
@@ -77,13 +77,14 @@ export async function processSinglePayment(paymentId, adapterFactory = createPay
   }
 
   // Call external payment provider outside DB lock
-  const adapter = adapterFactory(payment.provider);
   const referenceId = `PAY-${record.year}${String(record.month).padStart(2, '0')}-${payment.id}`;
   const narration = `Salary ${record.year}-${String(record.month).padStart(2, '0')}`;
 
+  let result;
   try {
+    const adapter = adapterFactory(payment.provider);
     const plainAccount = decryptAccountNumber(bank.account_number_encrypted);
-    const result = await adapter.initiatePayout({
+    result = await adapter.initiatePayout({
       idempotencyKey: payment.idempotency_key,
       amountPaise: Number(payment.amount_paise),
       accountHolderName: bank.account_holder_name,
@@ -94,30 +95,6 @@ export async function processSinglePayment(paymentId, adapterFactory = createPay
       narration,
     });
 
-    const c = await pool.connect();
-    try {
-      await c.query('BEGIN');
-      await c.query(
-        `INSERT INTO payment_transactions (salary_payment_id, provider, idempotency_key, request_type, provider_reference_id, status, http_status, response_payload)
-         VALUES ($1,$2,$3,'INITIATE',$4,$5,$6,$7)`,
-        [payment.id, payment.provider, payment.idempotency_key, result.providerPayoutId, result.status, result.httpStatus || 200, JSON.stringify(result.payload || {})]
-      );
-      await c.query(
-        `UPDATE salary_payments
-         SET status = $1, provider_payout_id = COALESCE($2, provider_payout_id), provider_utr = COALESCE($3, provider_utr),
-             failure_reason = NULL, completed_at = CASE WHEN $1 = 'SUCCESS' THEN CURRENT_TIMESTAMP ELSE completed_at END, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $4`,
-        [result.status, result.providerPayoutId, result.providerUtr, payment.id]
-      );
-      await syncPeriodStatus(c, payment.payroll_period_id);
-      await c.query('COMMIT');
-      return { id: payment.id, status: result.status };
-    } catch (e) {
-      await c.query('ROLLBACK').catch(() => {});
-      throw e;
-    } finally {
-      c.release();
-    }
   } catch (err) {
     const c = await pool.connect();
     try {
@@ -141,30 +118,52 @@ export async function processSinglePayment(paymentId, adapterFactory = createPay
       c.release();
     }
   }
+
+  // Keep the payment in progress if recording the provider's response fails.
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    await c.query(
+      `INSERT INTO payment_transactions (salary_payment_id, provider, idempotency_key, request_type, provider_reference_id, status, http_status, response_payload)
+       VALUES ($1,$2,$3,'INITIATE',$4,$5,$6,$7)`,
+      [payment.id, payment.provider, payment.idempotency_key, result.providerPayoutId, result.status, result.httpStatus || 200, JSON.stringify(result.payload || {})]
+    );
+    await c.query(
+      `UPDATE salary_payments
+       SET status = $1::varchar, provider_payout_id = COALESCE($2, provider_payout_id), provider_utr = COALESCE($3, provider_utr),
+           failure_reason = NULL, completed_at = CASE WHEN $1 = 'SUCCESS' THEN CURRENT_TIMESTAMP ELSE completed_at END, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $4`,
+      [result.status, result.providerPayoutId, result.providerUtr, payment.id]
+    );
+    await syncPeriodStatus(c, payment.payroll_period_id);
+    await c.query('COMMIT');
+    return { id: payment.id, status: result.status };
+  } catch (err) {
+    await c.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    c.release();
+  }
 }
 
 /**
  * Drain all PENDING salary payments in background.
  */
-export async function processPendingPayrollPayments(payrollPeriodId = null) {
-  if (running) return;
-  running = true;
-  try {
+export function processPendingPayrollPayments(payrollPeriodId = null) {
+  const drain = paymentQueue.then(async () => {
     const pending = payrollPeriodId
       ? (await query("SELECT id FROM salary_payments WHERE payroll_period_id = $1 AND status = 'PENDING' ORDER BY id", [payrollPeriodId])).rows
       : (await query("SELECT id FROM salary_payments WHERE status = 'PENDING' ORDER BY id LIMIT 50")).rows;
     for (const row of pending) {
       await processSinglePayment(row.id).catch(err => console.error('[PayrollWorker] Payment failed:', row.id, err.message));
     }
-  } finally {
-    running = false;
-  }
+  });
+  paymentQueue = drain.catch(() => {});
+  return drain;
 }
 
 export function enqueuePayrollPayments(payrollPeriodId) {
-  setImmediate(() => {
-    processPendingPayrollPayments(payrollPeriodId).catch(err => console.error('[PayrollWorker] Queue error:', err.message));
-  });
+  processPendingPayrollPayments(payrollPeriodId).catch(err => console.error('[PayrollWorker] Queue error:', err.message));
 }
 
 /**
@@ -190,7 +189,7 @@ export async function reconcileWebhookEvent(provider, event) {
 
     await client.query(
       `UPDATE salary_payments
-       SET status = $1, provider_utr = COALESCE($2, provider_utr), failure_reason = $3,
+       SET status = $1::varchar, provider_utr = COALESCE($2, provider_utr), failure_reason = $3,
            completed_at = CASE WHEN $1 = 'SUCCESS' THEN CURRENT_TIMESTAMP ELSE completed_at END, updated_at = CURRENT_TIMESTAMP
        WHERE id = $4`,
       [event.status, event.providerUtr || null, event.status === 'FAILED' ? (event.failureReason || 'Transfer failed at provider') : null, payment.id]
