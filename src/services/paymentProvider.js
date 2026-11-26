@@ -272,9 +272,9 @@ export function createPaymentAdapter(provider) {
       verifyWebhookSignature(rawBody, reqHeaders = {}) {
         if (!webhookSecret) return false;
         const signature = reqHeaders['x-webhook-signature'];
-        const timestamp = reqHeaders['x-webhook-timestamp'] || '';
-        if (!signature || typeof signature !== 'string') return false;
-        const expected = crypto.createHmac('sha256', webhookSecret).update(`${timestamp}${rawBody}`).digest('base64');
+        const timestamp = reqHeaders['x-webhook-timestamp'];
+        if (typeof signature !== 'string' || typeof timestamp !== 'string' || !/^\d+$/.test(timestamp)) return false;
+        const expected = crypto.createHmac('sha256', webhookSecret).update(timestamp).update(rawBody).digest('base64');
         const sigBuf = Buffer.from(signature, 'utf8');
         const expBuf = Buffer.from(expected, 'utf8');
         return sigBuf.length === expBuf.length && crypto.timingSafeEqual(sigBuf, expBuf);

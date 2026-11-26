@@ -169,43 +169,28 @@ export function enqueuePayrollPayments(payrollPeriodId) {
 /**
  * Apply a verified provider webhook event to salary_payments and payroll_periods.
  */
-export async function reconcileWebhookEvent(provider, event) {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    const payment = event.providerPayoutId
-      ? (await client.query('SELECT * FROM salary_payments WHERE provider = $1 AND provider_payout_id = $2 FOR UPDATE', [provider, event.providerPayoutId])).rows[0]
-      : null;
+export async function reconcileWebhookEvent(client, provider, event) {
+  if (!event.providerPayoutId) return { matched: false };
+  const { rows: [payment] } = await client.query(
+    'SELECT * FROM salary_payments WHERE provider = $1 AND provider_payout_id = $2 FOR UPDATE',
+    [provider, event.providerPayoutId]
+  );
 
-    if (!payment) {
-      await client.query('COMMIT');
-      return { matched: false };
-    }
-    // Never regress an already confirmed SUCCESS payment.
-    if (payment.status === 'SUCCESS') {
-      await client.query('COMMIT');
-      return { matched: true, unchanged: true };
-    }
+  if (!payment) return { matched: false };
+  if (payment.status === 'SUCCESS') return { matched: true, unchanged: true };
 
-    await client.query(
-      `UPDATE salary_payments
-       SET status = $1::varchar, provider_utr = COALESCE($2, provider_utr), failure_reason = $3,
-           completed_at = CASE WHEN $1 = 'SUCCESS' THEN CURRENT_TIMESTAMP ELSE completed_at END, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $4`,
-      [event.status, event.providerUtr || null, event.status === 'FAILED' ? (event.failureReason || 'Transfer failed at provider') : null, payment.id]
-    );
-    await client.query(
-      `INSERT INTO payment_transactions (salary_payment_id, provider, idempotency_key, request_type, provider_reference_id, status, response_payload, error_message)
-       VALUES ($1,$2,$3,'WEBHOOK',$4,$5,$6,$7)`,
-      [payment.id, provider, payment.idempotency_key, event.providerPayoutId, event.status, JSON.stringify(event), event.failureReason || null]
-    );
-    await syncPeriodStatus(client, payment.payroll_period_id);
-    await client.query('COMMIT');
-    return { matched: true, paymentId: payment.id, status: event.status };
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+  await client.query(
+    `UPDATE salary_payments
+     SET status = $1::varchar, provider_utr = COALESCE($2, provider_utr), failure_reason = $3,
+         completed_at = CASE WHEN $1 = 'SUCCESS' THEN CURRENT_TIMESTAMP ELSE completed_at END, updated_at = CURRENT_TIMESTAMP
+     WHERE id = $4`,
+    [event.status, event.providerUtr || null, event.status === 'FAILED' ? (event.failureReason || 'Transfer failed at provider') : null, payment.id]
+  );
+  await client.query(
+    `INSERT INTO payment_transactions (salary_payment_id, provider, idempotency_key, request_type, provider_reference_id, status, response_payload, error_message)
+     VALUES ($1,$2,$3,'WEBHOOK',$4,$5,$6,$7)`,
+    [payment.id, provider, payment.idempotency_key, event.providerPayoutId, event.status, JSON.stringify(event), event.failureReason || null]
+  );
+  await syncPeriodStatus(client, payment.payroll_period_id);
+  return { matched: true, paymentId: payment.id, status: event.status };
 }

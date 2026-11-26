@@ -101,29 +101,23 @@ const PLACEHOLDER_SECRETS = new Set([
   'password',
   '12345678',
 ]);
-let ephemeralProdSecret = null;
+let ephemeralSecret = null;
 let warnedWeakSecret = false;
 
 function getJwtSecret() {
   const configured = String(process.env.JWT_SECRET || '').trim();
   const isProd = process.env.NODE_ENV === 'production';
-  const isWeak = !configured || configured.length < 16 || PLACEHOLDER_SECRETS.has(configured.toLowerCase());
+  const isWeak = configured.length < 32 || PLACEHOLDER_SECRETS.has(configured.toLowerCase());
 
   if (!isWeak) {
     return crypto.createHash('sha256').update(configured).digest();
   }
-  if (isProd) {
-    if (!warnedWeakSecret) {
-      warnedWeakSecret = true;
-      console.warn('[Security] JWT_SECRET is missing or too weak in production. Set a strong 32+ char JWT_SECRET in backend/.env.');
-    }
-    if (!ephemeralProdSecret) {
-      ephemeralProdSecret = `${process.env.DATABASE_URL || ''}:${crypto.randomBytes(32).toString('hex')}`;
-    }
-    return crypto.createHash('sha256').update(ephemeralProdSecret).digest();
+  if (isProd && !warnedWeakSecret) {
+    warnedWeakSecret = true;
+    console.warn('[Security] JWT_SECRET is missing or too weak in production. Set a strong 32+ char JWT_SECRET in backend/.env.');
   }
-  const devSecret = process.env.DATABASE_URL || 'knooviq-jwt-dev-secret-change-in-production';
-  return crypto.createHash('sha256').update(devSecret).digest();
+  ephemeralSecret ??= crypto.randomBytes(32);
+  return ephemeralSecret;
 }
 
 function getJwtTtlSeconds() {

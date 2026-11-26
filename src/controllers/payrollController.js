@@ -1,4 +1,4 @@
-import { pool, query } from '../db/index.js';
+import { pool, query, transaction } from '../db/index.js';
 import { reportPeriod, indiaDate } from '../services/superAdminAttendanceReport.js';
 import { buildPayrollPreview, rupeesToPaise } from '../services/payrollCalculator.js';
 import { createPaymentAdapter, providerConfigStatus, validateBankDetails } from '../services/paymentProvider.js';
@@ -707,35 +707,39 @@ export async function retrySalaryPayment(req, res) {
 
     // Check actual provider status BEFORE allowing a retry to prevent duplicate bank transfers.
     const adapter = createPaymentAdapter(existing.provider);
-    if (existing.provider_payout_id && adapter.isConfigured()) {
+    if (existing.provider_payout_id) {
+      if (!adapter.isConfigured()) fail('The payment provider is unavailable. Confirm payout status before retrying.', 503);
       const liveStatus = await adapter.fetchPayoutStatus({ providerPayoutId: existing.provider_payout_id }).catch(() => null);
-      if (liveStatus) {
+      if (!liveStatus) fail('Could not confirm the previous payout status. Please retry the status check later.', 503);
+      await query(
+        `INSERT INTO payment_transactions (salary_payment_id, provider, idempotency_key, request_type, provider_reference_id, status, http_status, response_payload)
+         VALUES ($1,$2,$3,'STATUS_CHECK',$4,$5,$6,$7)`,
+        [existing.id, existing.provider, existing.idempotency_key, liveStatus.providerPayoutId, liveStatus.status, liveStatus.httpStatus || 200, JSON.stringify(liveStatus.payload || {})]
+      );
+      if (liveStatus.status !== 'FAILED') {
         await query(
-          `INSERT INTO payment_transactions (salary_payment_id, provider, idempotency_key, request_type, provider_reference_id, status, http_status, response_payload)
-           VALUES ($1,$2,$3,'STATUS_CHECK',$4,$5,$6,$7)`,
-          [existing.id, existing.provider, existing.idempotency_key, liveStatus.providerPayoutId, liveStatus.status, liveStatus.httpStatus || 200, JSON.stringify(liveStatus.payload || {})]
+          `UPDATE salary_payments SET status = $1::varchar, provider_utr = COALESCE($2, provider_utr), failure_reason = NULL,
+             completed_at = CASE WHEN $1 = 'SUCCESS' THEN CURRENT_TIMESTAMP ELSE completed_at END, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $3 AND status = 'FAILED' AND idempotency_key = $4`,
+          [liveStatus.status, liveStatus.providerUtr, existing.id, existing.idempotency_key]
         );
-        if (liveStatus.status === 'SUCCESS' || liveStatus.status === 'PROCESSING') {
-          await query(
-            `UPDATE salary_payments SET status = $1::varchar, provider_utr = COALESCE($2, provider_utr), failure_reason = NULL,
-               completed_at = CASE WHEN $1 = 'SUCCESS' THEN CURRENT_TIMESTAMP ELSE completed_at END, updated_at = CURRENT_TIMESTAMP
-             WHERE id = $3`,
-            [liveStatus.status, liveStatus.providerUtr, existing.id]
-          );
-          return res.status(409).json({
-            success: false,
-            error: `Provider reports this payout is already ${liveStatus.status}. Retry blocked to prevent duplicate transfer.`,
-          });
-        }
+        return res.status(409).json({
+          success: false,
+          error: `Provider reports this payout is already ${liveStatus.status}. Retry blocked to prevent duplicate transfer.`,
+        });
       }
     }
 
     client = await pool.connect();
     await client.query('BEGIN');
     const locked = (await client.query('SELECT * FROM salary_payments WHERE id = $1 FOR UPDATE', [id])).rows[0];
-    if (locked.status !== 'FAILED') fail(`Payment status changed to ${locked.status}; cannot retry.`, 409);
+    if (!locked || locked.status !== 'FAILED' || locked.idempotency_key !== existing.idempotency_key) {
+      fail('Payment changed while checking its status. Refresh before retrying.', 409);
+    }
 
-    const nextKey = `knooviq-pay-rec-${locked.payroll_record_id}-v${Number(locked.attempt_count) + 1}`;
+    const nextKey = locked.provider_payout_id
+      ? `knooviq-pay-rec-${locked.payroll_record_id}-v${Number(locked.attempt_count) + 1}`
+      : locked.idempotency_key;
     const updated = (await client.query(
       `UPDATE salary_payments SET status = 'PENDING', idempotency_key = $1, failure_reason = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *`,
       [nextKey, id]
@@ -758,34 +762,27 @@ export async function handlePaymentWebhook(req, res) {
       return res.status(400).json({ success: false, error: 'Unsupported provider.' });
     }
     const adapter = createPaymentAdapter(provider);
-    const rawBody = req.rawBody || JSON.stringify(req.body || {});
-    const signatureValid = adapter.verifyWebhookSignature(rawBody, req.headers);
-    const parsed = adapter.parseWebhookEvent(req.body || {});
-
-    const inserted = await query(
-      `INSERT INTO payment_webhook_logs (provider, event_id, event_type, signature_valid, payload)
-       VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (provider, event_id) WHERE event_id IS NOT NULL DO NOTHING
-       RETURNING id`,
-      [provider, parsed.eventId, parsed.eventType, signatureValid, JSON.stringify(req.body || {})]
-    );
-
-    if (!signatureValid) {
+    if (!Buffer.isBuffer(req.rawBody) || !adapter.verifyWebhookSignature(req.rawBody, req.headers)) {
       return res.status(401).json({ success: false, error: 'Invalid webhook signature.' });
     }
-    if (!inserted.rowCount) {
-      return res.json({ success: true, message: 'Duplicate webhook event ignored.' });
-    }
+    const parsed = adapter.parseWebhookEvent(req.body);
+    const result = await transaction(async client => {
+      const { rows: [log] } = await client.query(
+        `INSERT INTO payment_webhook_logs (provider, event_id, event_type, signature_valid, payload)
+         VALUES ($1, $2, $3, true, $4)
+         ON CONFLICT (provider, event_id) WHERE event_id IS NOT NULL DO UPDATE
+         SET event_type = EXCLUDED.event_type, signature_valid = true, payload = EXCLUDED.payload, processing_error = NULL
+         WHERE NOT payment_webhook_logs.signature_valid OR NOT payment_webhook_logs.processed
+         RETURNING id`,
+        [provider, parsed.eventId, parsed.eventType, JSON.stringify(req.body)]
+      );
+      if (!log) return null;
 
-    const logId = inserted.rows[0].id;
-    try {
-      const result = await reconcileWebhookEvent(provider, parsed);
-      await query('UPDATE payment_webhook_logs SET processed = true WHERE id = $1', [logId]);
-      return res.json({ success: true, data: result });
-    } catch (procErr) {
-      await query('UPDATE payment_webhook_logs SET processing_error = $1 WHERE id = $2', [procErr.message, logId]);
-      return res.status(500).json({ success: false, error: 'Webhook processing failed.' });
-    }
+      const reconciled = await reconcileWebhookEvent(client, provider, parsed);
+      await client.query('UPDATE payment_webhook_logs SET processed = true WHERE id = $1', [log.id]);
+      return reconciled;
+    });
+    return res.json(result ? { success: true, data: result } : { success: true, message: 'Duplicate webhook event ignored.' });
   } catch (err) { return respondError(res, err); }
 }
 

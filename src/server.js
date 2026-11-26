@@ -53,8 +53,8 @@ app.use(cors({
 app.use(express.json({
   limit: '256kb',
   verify: (req, res, buf) => {
-    if (req.originalUrl?.startsWith('/api/payroll/webhooks/')) {
-      req.rawBody = buf.toString('utf8');
+    if (/^\/api\/payroll\/webhooks\//i.test(req.path)) {
+      req.rawBody = buf;
     }
   }
 }));
