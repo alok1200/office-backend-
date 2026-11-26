@@ -104,19 +104,25 @@ export function matchesPublicOfficeNetwork(ip, office) {
   return prefix !== null && prefix === office.office_public_ipv6_cidr;
 }
 
+function trustsRenderClientIP(env) {
+  if (env.TRUST_RENDER_CLIENT_IP !== undefined) return env.TRUST_RENDER_CLIENT_IP === 'true';
+  // Render's 0.1 CPU web plan is Free, which blocks inbound private-network traffic.
+  return env.RENDER === 'true' && env.RENDER_CPU_COUNT === '0.1';
+}
+
 export function officeConnection(req, env = process.env) {
   if (env.RENDER_SERVICE_TYPE !== 'web') return { ip: peerAddress(req), type: 'LAN' };
 
   // Render public ingress overwrites CF-Connecting-IP. Enable only where ingress is trusted.
   const address = req.headers?.['cf-connecting-ip'];
-  if (env.TRUST_RENDER_CLIENT_IP !== 'true' || typeof address !== 'string' || !isIP(address)) return { ip: null, type: 'PUBLIC' };
+  if (!trustsRenderClientIP(env) || typeof address !== 'string' || !isIP(address)) return { ip: null, type: 'PUBLIC' };
   const ip = normalizeNetwork(address).text;
   return { ip, type: 'PUBLIC' };
 }
 
 export function officeWifiIngressStatus(req, env = process.env) {
   if (env.RENDER_SERVICE_TYPE !== 'web') return 'direct';
-  if (env.TRUST_RENDER_CLIENT_IP !== 'true') return 'trust_disabled';
+  if (!trustsRenderClientIP(env)) return 'trust_disabled';
   return officeConnection(req, env).ip ? 'client_ip_available' : 'client_ip_unavailable';
 }
 
