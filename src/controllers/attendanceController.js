@@ -4,6 +4,12 @@ import { plannedRequestForDate, resolveAttendanceStatus } from '../services/plan
 import { companyDate, companyAttendance } from '../services/companyAttendance.js';
 import { configuredOffice } from '../services/officeConfiguration.js';
 import { verifyPunchLocation } from '../services/punchGeofence.js';
+const punchMessages = new Map([
+  ['CHECK_IN', 'Checked in'],
+  ['START_BREAK', 'Started break'],
+  ['END_BREAK', 'Ended break'],
+  ['CHECK_OUT', 'Checked out']
+]);
 function getTodayDateString() { return indiaDate(); }
 function calculateDurations(attendance, breaks) {
   let totalBreakMinutes = 0;
@@ -114,8 +120,7 @@ export async function recordPunch(req, res) {
       const {
         action
       } = req.body;
-      const validActions = ['CHECK_IN', 'START_BREAK', 'END_BREAK', 'CHECK_OUT'];
-      if (!validActions.includes(action)) return response.status(400).json({
+      if (!punchMessages.has(action)) return response.status(400).json({
         success: false,
         error: 'INVALID_ACTION',
         message: 'Choose a valid attendance action.'
@@ -228,7 +233,7 @@ export async function recordPunch(req, res) {
       return response.json({
         success: true,
         message: verificationMethod === 'OFFICE_WIFI'
-          ? `${action === 'CHECK_IN' ? 'Checked in' : 'Checked out'} using office Wi-Fi.`
+          ? `${punchMessages.get(action)} using office Wi-Fi.`
           : `Successfully executed '${action}'.`,
         verification_method: verificationMethod,
         data: {

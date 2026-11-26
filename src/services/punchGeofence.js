@@ -5,6 +5,7 @@ export const MAX_ATTENDANCE_ACCURACY_M = 100;
 export const attendanceAccuracyLimit = value => Math.min(Number(value ?? 75), MAX_ATTENDANCE_ACCURACY_M);
 const fail = (code, message, details = {}, status = 400) => { throw Object.assign(new Error(message), { status, code, details }); };
 const numeric = value => (typeof value === 'number' || typeof value === 'string' && value.trim()) && Number.isFinite(Number(value));
+const attendanceActions = new Set(['CHECK_IN', 'START_BREAK', 'END_BREAK', 'CHECK_OUT']);
 export function verifyPunchGeofence(office, body) {
   if (!office) fail('OFFICE_NOT_CONFIGURED', 'Your office location has not been configured. Contact your administrator.', {}, 409);
   const radius = ATTENDANCE_RADIUS_M, maximumAccuracy = attendanceAccuracyLimit(office.max_accuracy_m);
@@ -23,12 +24,10 @@ export function verifyPunchLocation(office, req) {
     verifyPunchGeofence(office, req.body);
     return 'GPS';
   } catch (error) {
-    const { action } = req.body;
-    const isWorkdayPunch = action === 'CHECK_IN' || action === 'CHECK_OUT';
     const canFallBack = error.code === 'GPS_REQUIRED' || error.code === 'LOW_ACCURACY';
     if (canFallBack || error.code === 'OUTSIDE_GEOFENCE') {
       const wifiMatched = matchesOfficeWifi(req, office);
-      if (isWorkdayPunch && canFallBack && wifiMatched) return 'OFFICE_WIFI';
+      if (attendanceActions.has(req.body.action) && canFallBack && wifiMatched) return 'OFFICE_WIFI';
       error.details = {
         ...error.details,
         wifi_attendance_enabled: Boolean(office?.wifi_attendance_enabled),

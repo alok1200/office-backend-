@@ -1,5 +1,5 @@
 import { pool, query, transaction } from '../db/index.js';
-import { isPrivateOfficeNetwork, matchOfficeIP, officeConnection, validateOffice, validateOfficeCoordinates, validateOfficePublicIP } from '../services/officeNetworks.js';
+import { detectOfficeSubnet, isPrivateOfficeNetwork, matchOfficeIP, officeConnection, validateOffice, validateOfficeCoordinates, validateOfficePublicIP } from '../services/officeNetworks.js';
 import { ATTENDANCE_RADIUS_M, attendanceAccuracyLimit } from '../services/punchGeofence.js';
 const fail = (message, status = 400) => {
   throw Object.assign(new Error(message), {
@@ -38,7 +38,8 @@ export async function listOffices(req, res) {
   try {
     const snapshot = await sqlSnapshot(query);
     const primary = primaryOffice(snapshot.offices);
-    const { ip, type } = officeConnection(req);
+    const connection = officeConnection(req);
+    const { ip, type } = connection;
     const offices = snapshot.offices.map(o => {
       const assigned = snapshot.users.filter(u => u.office_id === o.id);
       const inherited = o.id === primary?.id ? snapshot.users.filter(u => !u.office_id) : [];
@@ -61,6 +62,7 @@ export async function listOffices(req, res) {
         offices,
         users: snapshot.users.map(safeUser),
         connection_ip: ip,
+        connection_subnet: detectOfficeSubnet(req, connection),
         connection_source: type === 'PUBLIC' ? 'Public connection seen by Render' : 'Direct connection seen by the API server',
         matched_office_ids: offices.filter(o => o.network_matches).map(o => o.id)
       }

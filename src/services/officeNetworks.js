@@ -1,4 +1,5 @@
 import { isIP } from 'node:net';
+import { networkInterfaces } from 'node:os';
 const fail = message => { throw Object.assign(new Error(message), { status: 400 }); };
 function parseAddress(input) {
   if (typeof input !== 'string' || input.includes('%') || !isIP(input)) fail(`Invalid IP address: ${String(input).slice(0, 80)}`);
@@ -97,6 +98,20 @@ export function isPrivateOfficeNetwork(entry) {
     const shift = BigInt(range.bits - range.prefix);
     return network.value >> shift === range.value >> shift;
   });
+}
+
+export function detectOfficeSubnet(req, connection = officeConnection(req), interfaces = networkInterfaces()) {
+  if (connection.type !== 'LAN' || !isPrivateOfficeNetwork(connection.ip)) return null;
+  try {
+    const localIP = normalizeNetwork(req.socket.localAddress).text;
+    const iface = Object.values(interfaces).flat().find(entry =>
+      !entry.internal && isPrivateOfficeNetwork(entry.cidr) &&
+      normalizeNetwork(entry.address).text === localIP && matchOfficeIP(connection.ip, [entry.cidr])
+    );
+    return iface ? normalizeNetwork(iface.cidr).text : null;
+  } catch {
+    return null;
+  }
 }
 
 export function matchesOfficeWifi(req, office, env = process.env) {
