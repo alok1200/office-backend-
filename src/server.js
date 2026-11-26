@@ -26,6 +26,7 @@ import employeeRoutes from './routes/employeeRoutes.js';
 import holidayRoutes from './routes/holidayRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
 import payrollRoutes from './routes/payrollRoutes.js';
+import { officeWifiIngressStatus } from './services/officeNetworks.js';
 
 
 dotenv.config();
@@ -65,9 +66,20 @@ app.use(sanitizeRequestMiddleware);
 app.use('/api', createRateLimiter({ windowMs: 60_000, max: 600 }));
 
 // Health check
-app.get('/api/health', async (req,res) => {
-  try { await query('SELECT 1'); res.json({status:'ok',service:'KNOOVIQ Attendance Backend',database:'postgresql',release:process.env.RENDER_GIT_COMMIT,timestamp:new Date().toISOString()}); }
-  catch { res.status(503).json({status:'unavailable',database:'postgresql'}); }
+app.get('/api/health', async (req, res) => {
+  try {
+    await query('SELECT 1');
+    res.json({
+      status: 'ok',
+      service: 'KNOOVIQ Attendance Backend',
+      database: 'postgresql',
+      release: process.env.RENDER_GIT_COMMIT,
+      office_wifi_ingress: officeWifiIngressStatus(req),
+      timestamp: new Date().toISOString()
+    });
+  } catch {
+    res.status(503).json({ status: 'unavailable', database: 'postgresql' });
+  }
 });
 
 // Mount Routes

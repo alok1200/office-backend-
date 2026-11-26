@@ -114,6 +114,12 @@ export function officeConnection(req, env = process.env) {
   return { ip, type: 'PUBLIC' };
 }
 
+export function officeWifiIngressStatus(req, env = process.env) {
+  if (env.RENDER_SERVICE_TYPE !== 'web') return 'direct';
+  if (env.TRUST_RENDER_CLIENT_IP !== 'true') return 'trust_disabled';
+  return officeConnection(req, env).ip ? 'client_ip_available' : 'client_ip_unavailable';
+}
+
 export function isPrivateOfficeNetwork(entry) {
   let network;
   try { network = normalizeNetwork(entry); } catch { return false; }
