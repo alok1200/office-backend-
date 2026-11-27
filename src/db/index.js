@@ -25,7 +25,7 @@ export const pool = new pg.Pool({
   connectionString,
   // Neon pooled connections use the database role's default public schema.
   ...(usesNeonPooler ? {} : { options: `-c search_path=${schema},public` }),
-  connectionTimeoutMillis: 5000,
+  connectionTimeoutMillis: 15000,
   max: 10,
   // pg respects sslmode in DATABASE_URL for remote PostgreSQL deployments.
 });
