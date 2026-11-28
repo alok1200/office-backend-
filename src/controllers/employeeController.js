@@ -122,6 +122,15 @@ const text = (value, max, label, required = false) => {
   if (v.length > max) fail(`${label} must be at most ${max} characters.`);
   return v || null;
 };
+function phoneNumber(value, label, previous) {
+  const raw = text(value, 50, label);
+  if (!raw || raw === previous) return raw;
+  const number = raw.replace(/[\s().\-\u2010-\u2015]/g, '');
+  if (!/^\+?[0-9]{6,15}$/.test(number)) {
+    fail(`Enter a valid ${label.toLowerCase()} with 6–15 digits and an optional country code.`);
+  }
+  return number;
+}
 const dateValue = (value, label, required = false) => {
   const v = String(value ?? '').trim();
   if (!v) { if (required) fail(`${label} is required.`); return null; }
@@ -199,14 +208,13 @@ async function createAccount(req, res, accountRole) {
     if (password.length < 8 || password.length > 128) fail('Temporary password must be 8–128 characters.');
     const department_name = text(b.department_name, 100, 'Department', true);
     const designation = text(b.designation, 100, 'Designation', true);
-    const phone = text(b.phone, 50, 'Phone number');
-    if (phone && !/^[0-9+()\-\s]{6,50}$/.test(phone)) fail('Enter a valid phone number.');
+    const phone = phoneNumber(b.phone, 'Mobile number');
     const joining_date = dateValue(b.joining_date, 'Joining date') || new Date().toISOString().slice(0, 10);
     const date_of_birth = dateValue(b.date_of_birth, 'Date of birth');
     if (date_of_birth && date_of_birth >= joining_date) fail('Date of birth must be before the joining date.');
     const address = text(b.address, 500, 'Address');
     const emergency_contact_name = text(b.emergency_contact_name, 150, 'Emergency contact name');
-    const emergency_contact_phone = text(b.emergency_contact_phone, 50, 'Emergency contact phone');
+    const emergency_contact_phone = phoneNumber(b.emergency_contact_phone, 'Emergency contact number');
     const requestedCode = text(b.employee_id, 50, 'Employee ID');
     if (requestedCode && !/^[A-Za-z0-9_-]+$/.test(requestedCode)) fail('Employee ID may only contain letters, numbers, hyphen and underscore.');
     const custom_fields = validateCustomFields(b.custom_fields);
@@ -444,14 +452,11 @@ export async function updateEmployee(req, res) {
     if (!EMAIL_RE.test(email)) fail('Enter a valid email address.');
     const department_name = text(b.department_name, 100, 'Department', true);
     const designation = text(b.designation, 100, 'Designation', true);
-    const phone = text(b.phone, 50, 'Phone number');
-    if (phone && !/^[0-9+()\-\s]{6,50}$/.test(phone)) fail('Enter a valid phone number.');
     const joining_date = dateValue(b.joining_date, 'Joining date', true);
     const date_of_birth = dateValue(b.date_of_birth, 'Date of birth');
     if (date_of_birth && date_of_birth >= joining_date) fail('Date of birth must be before the joining date.');
     const address = text(b.address, 500, 'Address');
     const emergency_contact_name = text(b.emergency_contact_name, 150, 'Emergency contact name');
-    const emergency_contact_phone = text(b.emergency_contact_phone, 50, 'Emergency contact phone');
     const requestedCode = text(b.employee_id, 50, 'Employee ID');
     if (requestedCode && !/^[A-Za-z0-9_-]+$/.test(requestedCode)) fail('Employee ID may only contain letters, numbers, hyphen and underscore.');
     const custom_fields = validateCustomFields(b.custom_fields);
@@ -462,6 +467,8 @@ export async function updateEmployee(req, res) {
     if (!before || !before.is_active) fail('Employee not found.', 404);
     if (before.role !== 'EMPLOYEE') fail('HR Admin can only edit Employee accounts.', 403);
 
+    const phone = phoneNumber(b.phone, 'Mobile number', before.phone);
+    const emergency_contact_phone = phoneNumber(b.emergency_contact_phone, 'Emergency contact number', before.emergency_contact_phone);
     const employee_id = requestedCode || before.employee_id;
     const dept = (await client.query('SELECT id, name FROM departments WHERE LOWER(name) = LOWER($1)', [department_name])).rows[0];
     const updated = (await client.query(

@@ -97,6 +97,7 @@ router.post('/login', async (req, res) => {
       // Determined by backend: 'EMPLOYEE', 'HR_ADMIN', 'SUPER_ADMIN'
       department_name: user.department_name,
       designation: user.designation,
+      phone: user.phone,
       avatar_url: user.avatar_url,
       can_record_attendance: user.can_record_attendance
     };
