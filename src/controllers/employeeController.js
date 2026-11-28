@@ -115,6 +115,7 @@ const ASSET_TYPES = ['LAPTOP', 'DESKTOP', 'MONITOR', 'MOBILE', 'ACCESS_CARD', 'I
 const ASSET_CONDITIONS = ['NEW', 'GOOD', 'FAIR', 'POOR'];
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const EMPLOYEE_ID_TAKEN = 'This employee ID is already taken.';
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
 const text = (value, max, label, required = false) => {
   const v = String(value ?? '').trim();
@@ -122,6 +123,11 @@ const text = (value, max, label, required = false) => {
   if (v.length > max) fail(`${label} must be at most ${max} characters.`);
   return v || null;
 };
+function newEmployeeId(value) {
+  const raw = typeof value === 'string' || Number.isSafeInteger(value) ? String(value).trim() : '';
+  if (!/^(?:KI)?[0-9]{6}$/i.test(raw)) fail('Enter six digits or a KI employee ID such as KI123456.');
+  return `KI${raw.slice(-6)}`;
+}
 function phoneNumber(value, label, previous) {
   const raw = text(value, 50, label);
   if (!raw || raw === previous) return raw;
@@ -139,8 +145,10 @@ const dateValue = (value, label, required = false) => {
 };
 const respondError = (res, error) => {
   if (error.code === '23505') {
-    const field = /email/.test(error.detail || '') ? 'email address' : /asset|tag/.test(`${error.constraint} ${error.detail}`) ? 'asset tag' : 'employee ID';
-    return res.status(409).json({ success: false, error: `That ${field} is already in use.` });
+    const constraint = error.constraint || '';
+    const message = constraint.includes('email') ? 'That email address is already in use.'
+      : constraint.includes('asset') ? 'That asset tag is already in use.' : EMPLOYEE_ID_TAKEN;
+    return res.status(409).json({ success: false, error: message });
   }
   return res.status(error.status || 500).json({ success: false, error: error.status ? error.message : 'Could not complete the employee operation. Please retry.' });
 };
@@ -184,7 +192,7 @@ function validateCustomFields(raw) {
 
 /**
  * POST /api/employees/company
- * HR Admin onboards a new employee together with issued company assets.
+ * HR Admin or Super Admin onboards a new employee together with issued company assets.
  * Only EMPLOYEE accounts can be created here, so HR cannot grant themselves or others elevated roles.
  */
 export async function createEmployee(req, res) {
@@ -215,8 +223,7 @@ async function createAccount(req, res, accountRole) {
     const address = text(b.address, 500, 'Address');
     const emergency_contact_name = text(b.emergency_contact_name, 150, 'Emergency contact name');
     const emergency_contact_phone = phoneNumber(b.emergency_contact_phone, 'Emergency contact number');
-    const requestedCode = text(b.employee_id, 50, 'Employee ID');
-    if (requestedCode && !/^[A-Za-z0-9_-]+$/.test(requestedCode)) fail('Employee ID may only contain letters, numbers, hyphen and underscore.');
+    const employee_id = newEmployeeId(b.employee_id);
     const custom_fields = validateCustomFields(b.custom_fields);
     if (b.assets != null && !Array.isArray(b.assets)) fail('Assets must be a list.');
     const rawAssets = b.assets || [];
@@ -230,14 +237,13 @@ async function createAccount(req, res, accountRole) {
 
     client = await pool.connect();
     await client.query('BEGIN');
-    await client.query('SELECT pg_advisory_xact_lock(784292)');
-    let employee_id = requestedCode;
-    if (!employee_id) {
-      const last = (await client.query("SELECT COALESCE(MAX(NULLIF(regexp_replace(employee_id, '\\D', '', 'g'), '')::bigint), 1000) AS n FROM employees WHERE employee_id ~ '^KNV-[0-9]+$'")).rows[0];
-      employee_id = `KNV-${Number(last.n) + 1}`;
-    }
-    const duplicate=(await client.query('SELECT email, employee_id FROM employees WHERE LOWER(email)=LOWER($1) OR LOWER(employee_id)=LOWER($2) LIMIT 1', [email, employee_id])).rows[0];
-    if (duplicate) fail(duplicate.email.toLowerCase() === email ? 'That email address is already in use.' : 'That employee ID is already in use.', 409);
+    const { rows: [duplicate] } = await client.query(
+      `SELECT EXISTS (SELECT FROM employees WHERE LOWER(employee_id) = LOWER($1)) AS id_taken,
+              EXISTS (SELECT FROM employees WHERE LOWER(email) = LOWER($2)) AS email_taken`,
+      [employee_id, email]
+    );
+    if (duplicate.id_taken) fail(EMPLOYEE_ID_TAKEN, 409);
+    if (duplicate.email_taken) fail('That email address is already in use.', 409);
     const dept = (await client.query('SELECT id, name FROM departments WHERE LOWER(name) = LOWER($1)', [department_name])).rows[0];
     const office = (await client.query('SELECT id FROM office_locations WHERE is_primary = true AND is_active = true LIMIT 1')).rows[0];
     const employee = (await client.query(
@@ -256,7 +262,7 @@ async function createAccount(req, res, accountRole) {
     );
     await client.query(
       "INSERT INTO notifications (recipient_id, title, message, category) VALUES ($1,$2,$3,'ANNOUNCEMENT')",
-      [employee.id, 'Welcome to KNOOVIQ', `Your ${accountRole === 'HR_ADMIN' ? 'HR Admin account was created by Super Admin' : 'account was created by HR'}. Sign in with your work email and the password you were given.`]
+      [employee.id, 'Welcome to KNOOVIQ', 'Your KNOOVIQ account is ready. Sign in with your work email or employee ID and the password you were given.']
     );
     await client.query('COMMIT');
     return res.status(201).json({ success: true, message: `${first_name} ${last_name} (${employee.employee_id}) was added.`, data: { ...employee, assets: savedAssets } });
@@ -333,7 +339,12 @@ export async function returnEmployeeAsset(req, res) {
  */
 export async function getMyAssets(req, res) {
   try {
-    const assets = (await query('SELECT * FROM company_assets WHERE employee_id = $1 ORDER BY returned_date NULLS FIRST, issued_date DESC, id DESC', [req.user.id])).rows;
+    const assets = (await query(
+      `SELECT id, asset_type, asset_name, asset_tag, serial_number, condition, issued_date, returned_date
+       FROM company_assets WHERE employee_id = $1
+       ORDER BY returned_date NULLS FIRST, issued_date DESC, id DESC`,
+      [req.user.id]
+    )).rows;
     return res.json({ success: true, data: assets });
   } catch (error) { return respondError(res, error); }
 }
@@ -458,7 +469,6 @@ export async function updateEmployee(req, res) {
     const address = text(b.address, 500, 'Address');
     const emergency_contact_name = text(b.emergency_contact_name, 150, 'Emergency contact name');
     const requestedCode = text(b.employee_id, 50, 'Employee ID');
-    if (requestedCode && !/^[A-Za-z0-9_-]+$/.test(requestedCode)) fail('Employee ID may only contain letters, numbers, hyphen and underscore.');
     const custom_fields = validateCustomFields(b.custom_fields);
 
     client = await pool.connect();
@@ -469,7 +479,7 @@ export async function updateEmployee(req, res) {
 
     const phone = phoneNumber(b.phone, 'Mobile number', before.phone);
     const emergency_contact_phone = phoneNumber(b.emergency_contact_phone, 'Emergency contact number', before.emergency_contact_phone);
-    const employee_id = requestedCode || before.employee_id;
+    const employee_id = requestedCode && requestedCode !== before.employee_id ? newEmployeeId(requestedCode) : before.employee_id;
     const dept = (await client.query('SELECT id, name FROM departments WHERE LOWER(name) = LOWER($1)', [department_name])).rows[0];
     const updated = (await client.query(
       `UPDATE employees
